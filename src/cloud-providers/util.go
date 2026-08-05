@@ -99,6 +99,10 @@ func SelectInstanceTypeToUse(spec InstanceTypeSpec, specList []InstanceTypeSpec,
 
 }
 
+func SelectAcceleratorTypeForInstance(machineType string) (string, error) {
+	return "nvidia-tesla-t4", nil
+}
+
 // Method to find the best fit instance type for the given memory and vcpus
 // The sortedInstanceTypeSpecList slice is a sorted list of instance types based on ascending order of supported memory
 func GetBestFitInstanceType(sortedInstanceTypeSpecList []InstanceTypeSpec, vcpus int64, memory int64) (string, error) {

@@ -206,6 +206,10 @@ func (p *gcpProvider) selectMachineType(ctx context.Context, spec provider.Insta
 	return provider.SelectInstanceTypeToUse(spec, p.serviceConfig.MachineTypeSpecList, p.serviceConfig.MachineTypes, p.serviceConfig.MachineType)
 }
 
+func (p *gcpProvider) selectAcceleratorType(ctx context.Context, machineType string) (string, error) {
+	return provider.SelectAcceleratorTypeForInstance(machineType)
+}
+
 func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID string, cloudConfig cloudinit.CloudConfigGenerator, spec provider.InstanceTypeSpec) (instance *provider.Instance, err error) {
 
 	instanceName := util.GenerateInstanceName(podName, sandboxID, maxInstanceNameLen)
@@ -339,6 +343,19 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 		},
 		MachineType:       proto.String(fmt.Sprintf("zones/%s/machineTypes/%s", p.serviceConfig.Zone, machineType)),
 		NetworkInterfaces: []*computepb.NetworkInterface{networkInterface},
+	}
+
+	if spec.GPUs > 0 {
+		acceleratorType, err := p.selectAcceleratorType(ctx, machineType)
+		if err != nil {
+			return nil, fmt.Errorf("Cannot pick acceleratorType: %v", err)
+		}
+		instanceResource.GuestAccelerators = []*computepb.AcceleratorConfig{
+			{
+				AcceleratorCount: proto.Int32(int32(spec.GPUs)),
+				AcceleratorType:  proto.String(fmt.Sprintf("zones/%s/acceleratorTypes/%s", p.serviceConfig.Zone, acceleratorType)),
+			},
+		}
 	}
 
 	// Check if OnHostMaintenance needs to be set to TERMINATE
@@ -486,3 +503,4 @@ func hasAnyPrefix(s string, prefixes ...string) bool {
 	}
 	return false
 }
+
