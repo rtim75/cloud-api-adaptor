@@ -46,3 +46,4 @@ RUN --security=insecure mkosi --profile=$PROFILE --image-version=$IMAGE_VERSION
 FROM scratch
 
 COPY --from=builder /image/build/system.raw /
+
