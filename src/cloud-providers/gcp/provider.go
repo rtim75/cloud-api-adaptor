@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
+	"regexp"
 	"strings"
+	"time"
 
 	"cloud.google.com/go/auth/credentials"
 	compute "cloud.google.com/go/compute/apiv1"
@@ -31,6 +33,7 @@ const maxInstanceNameLen = 63
 type gcpProvider struct {
 	serviceConfig   *Config
 	instancesClient *compute.InstancesClient
+	clientOptions   []option.ClientOption
 }
 
 func (p *gcpProvider) ConfigVerifier() error {
@@ -50,7 +53,8 @@ func NewProvider(config *Config) (provider.Provider, error) {
 		if err != nil {
 			return nil, fmt.Errorf("configuration error when using creds: %s", err)
 		}
-		provider.instancesClient, err = compute.NewInstancesRESTClient(context.TODO(), option.WithAuthCredentials(creds))
+		provider.clientOptions = []option.ClientOption{option.WithAuthCredentials(creds)}
+		provider.instancesClient, err = compute.NewInstancesRESTClient(context.TODO(), provider.clientOptions...)
 		if err != nil {
 			return nil, fmt.Errorf("NewInstancesRESTClient with credentials error: %s", err)
 		}
@@ -252,6 +256,11 @@ func (p *gcpProvider) updateInstanceSizeSpecList() error {
 
 func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID string, cloudConfig cloudinit.CloudConfigGenerator, spec provider.InstanceTypeSpec) (instance *provider.Instance, err error) {
 
+	dataDisks, err := existingDataDisks(p.serviceConfig.ProjectID, p.serviceConfig.Zone, spec.Volumes)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CSI volumes: %w", err)
+	}
+
 	instanceName := util.GenerateInstanceName(podName, sandboxID, maxInstanceNameLen)
 	logger.Printf("CreateInstance: name: %q", instanceName)
 
@@ -385,6 +394,8 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 		NetworkInterfaces: []*computepb.NetworkInterface{networkInterface},
 	}
 
+	instanceResource.Disks = append(instanceResource.Disks, dataDisks...)
+
 	// Check if OnHostMaintenance needs to be set to TERMINATE
 	// This is required for:
 	// 1. Confidential VMs
@@ -421,9 +432,9 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 		InstanceResource: instanceResource,
 	}
 
-	op, err := p.instancesClient.Insert(ctx, insertReq)
+	op, err := p.insertInstance(ctx, insertReq, spec.Volumes)
 	if err != nil {
-		return nil, fmt.Errorf("Instances.Insert error: %s. req: %v", err, insertReq)
+		return nil, fmt.Errorf("creating instance: %w", err)
 	}
 	err = op.Wait(ctx)
 	if err != nil {
@@ -529,4 +540,122 @@ func hasAnyPrefix(s string, prefixes ...string) bool {
 		}
 	}
 	return false
+}
+
+// existingDataDisks maps CSI disk identities to existing zonal attachments.
+// API preflight and Instances.Insert additionally validate disk state and limits.
+// DeviceName is the guest lookup identity; it must not depend on list order.
+func existingDataDisks(project, zone string, volumes []provider.CloudVolume) ([]*computepb.AttachedDisk, error) {
+	var disks []*computepb.AttachedDisk
+	seen := make(map[string]bool, len(volumes))
+	for _, volume := range volumes {
+		parts := csiDiskPath.FindStringSubmatch(volume.DiskID)
+		if parts == nil {
+			return nil, fmt.Errorf("invalid zonal disk path %q", volume.DiskID)
+		}
+		if parts[1] != project || parts[2] != zone {
+			return nil, fmt.Errorf("disk %q must be in PodVM project %q and zone %q", volume.DiskID, project, zone)
+		}
+		if seen[volume.DiskID] {
+			return nil, fmt.Errorf("duplicate disk %q", volume.DiskID)
+		}
+		seen[volume.DiskID] = true
+		disks = append(disks, &computepb.AttachedDisk{
+			Source:     proto.String(volume.DiskID),
+			DeviceName: proto.String(parts[3]),
+			Boot:       proto.Bool(false),
+			AutoDelete: proto.Bool(false),
+			Type:       proto.String(computepb.AttachedDisk_PERSISTENT.String()),
+			Mode:       proto.String(computepb.AttachedDisk_READ_WRITE.String()),
+			Interface:  proto.String(computepb.AttachedDisk_NVME.String()),
+		})
+	}
+	return disks, nil
+}
+
+var csiDiskPath = regexp.MustCompile(`^projects/([a-z][a-z0-9-]{4,28}[a-z0-9])/zones/([a-z][a-z0-9-]*[0-9]-[a-z])/disks/([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)$`)
+
+// insertInstance keeps preflight immediately before the mutating request. A
+// successful preflight cannot prevent races; Insert errors still reach callers.
+func (p *gcpProvider) insertInstance(ctx context.Context, req *computepb.InsertInstanceRequest, volumes []provider.CloudVolume) (*compute.Operation, error) {
+	if len(volumes) > 0 {
+		resource := req.GetInstanceResource()
+		if len(resource.GetDisks()) == 0 {
+			return nil, fmt.Errorf("CSI preflight requires the boot disk request")
+		}
+		machine := resource.GetMachineType()
+		machine = machine[strings.LastIndex(machine, "/")+1:]
+		bootSize := resource.GetDisks()[0].GetInitializeParams().GetDiskSizeGb()
+		if err := p.validateVolumes(ctx, machine, bootSize, volumes); err != nil {
+			return nil, fmt.Errorf("CSI disk preflight: %w", err)
+		}
+	}
+	return p.instancesClient.Insert(ctx, req)
+}
+
+// validateVolumes checks that zonal pd-balanced disks are READY and unattached,
+// and that their count and total capacity, including boot, fit the machine type.
+// These read-only checks do not cover all interface or confidential VM constraints;
+// Instances.Insert remains authoritative and can reject changes after preflight.
+func (p *gcpProvider) validateVolumes(ctx context.Context, machine string, bootSize int64, volumes []provider.CloudVolume) error {
+	if len(volumes) == 0 {
+		return nil
+	}
+	if _, err := existingDataDisks(p.serviceConfig.ProjectID, p.serviceConfig.Zone, volumes); err != nil {
+		return err
+	}
+	if bootSize <= 0 {
+		return fmt.Errorf("invalid boot disk size %d", bootSize)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	machineClient, err := compute.NewMachineTypesRESTClient(ctx, p.clientOptions...)
+	if err != nil {
+		return fmt.Errorf("creating machine types client: %w", err)
+	}
+	defer machineClient.Close()
+	mt, err := machineClient.Get(ctx, &computepb.GetMachineTypeRequest{Project: p.serviceConfig.ProjectID, Zone: p.serviceConfig.Zone, MachineType: machine})
+	if err != nil {
+		return fmt.Errorf("reading machine type %q: %w", machine, err)
+	}
+	countLimit, sizeLimit := mt.GetMaximumPersistentDisks(), mt.GetMaximumPersistentDisksSizeGb()
+	if countLimit <= 0 || sizeLimit <= 0 {
+		return fmt.Errorf("machine type %q does not report usable Persistent Disk limits", machine)
+	}
+	if int64(len(volumes))+1 > int64(countLimit) {
+		return fmt.Errorf("machine type %q allows %d Persistent Disks; requested %d including boot", machine, countLimit, len(volumes)+1)
+	}
+	if bootSize > sizeLimit {
+		return fmt.Errorf("boot disk exceeds machine type %q total disk limit %d GiB", machine, sizeLimit)
+	}
+	remaining := sizeLimit - bootSize
+	disksClient, err := compute.NewDisksRESTClient(ctx, p.clientOptions...)
+	if err != nil {
+		return fmt.Errorf("creating disks client: %w", err)
+	}
+	defer disksClient.Close()
+	for _, vol := range volumes {
+		name := csiDiskPath.FindStringSubmatch(vol.DiskID)[3]
+		disk, err := disksClient.Get(ctx, &computepb.GetDiskRequest{Project: p.serviceConfig.ProjectID, Zone: p.serviceConfig.Zone, Disk: name})
+		if err != nil {
+			return fmt.Errorf("reading disk %q: %w", vol.DiskID, err)
+		}
+		if disk.GetStatus() != "READY" {
+			return fmt.Errorf("disk %q is not READY (status %q)", vol.DiskID, disk.GetStatus())
+		}
+		if len(disk.GetUsers()) > 0 {
+			return fmt.Errorf("disk %q is already attached to %v", vol.DiskID, disk.GetUsers())
+		}
+		if !strings.HasSuffix(disk.GetType(), "/diskTypes/pd-balanced") {
+			return fmt.Errorf("disk %q has unsupported type %q; expected pd-balanced", vol.DiskID, disk.GetType())
+		}
+		if disk.GetSizeGb() <= 0 {
+			return fmt.Errorf("disk %q reports invalid size %d", vol.DiskID, disk.GetSizeGb())
+		}
+		if disk.GetSizeGb() > remaining {
+			return fmt.Errorf("disks including boot exceed machine type %q total limit %d GiB", machine, sizeLimit)
+		}
+		remaining -= disk.GetSizeGb()
+	}
+	return nil
 }

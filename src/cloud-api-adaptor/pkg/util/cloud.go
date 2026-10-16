@@ -153,11 +153,14 @@ type CloudVolumeAnnotation struct {
 // mountInfo.json files written by the CSI block driver. Each file
 // describes a cloud volume that should be attached to the PodVM.
 // Volumes are filtered by pod UID (from annotations) to prevent
-// cross-pod volume leakage on multi-tenant nodes.
+// cross-pod volume leakage on multi-tenant nodes. A missing UID returns no volumes.
 func GetCSIVolumesForPod(annotations map[string]string) []provider.CloudVolume {
 	var volumes []provider.CloudVolume
 
 	podUID := annotations[cri.SandboxUID]
+	if podUID == "" {
+		return nil
+	}
 
 	entries, err := os.ReadDir(KataDirectVolumesDir)
 	if err != nil {

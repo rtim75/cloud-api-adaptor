@@ -194,7 +194,11 @@ func (s *cloudService) CreateVM(ctx context.Context, req *pb.CreateVMRequest) (r
 	image := util.GetImageFromAnnotation(req.Annotations)
 
 	// Get CSI volumes that need to be attached to the PodVM
-	csiVolumes := util.GetCSIVolumesForPod(req.Annotations)
+	csiAnnotations, err := resolveCSIPodAnnotations(ctx, req.Annotations, s.ppService)
+	if err != nil {
+		return nil, fmt.Errorf("resolving CSI pod identity: %w", err)
+	}
+	csiVolumes := util.GetCSIVolumesForPod(csiAnnotations)
 	if len(csiVolumes) > 0 {
 		logger.Printf("Found %d CSI volumes to attach to PodVM", len(csiVolumes))
 	}

@@ -126,7 +126,7 @@ func (s *proxyService) CreateContainer(ctx context.Context, req *pb.CreateContai
 			if !strings.Contains(decodedPath, "/volumes/"+util.CSIPluginEscapeQualifiedName+"/") {
 				continue
 			}
-			if podUID != "" && !strings.Contains(decodedPath, "/pods/"+podUID+"/") {
+			if podUID == "" || !strings.Contains(decodedPath, "/pods/"+podUID+"/") {
 				continue
 			}
 

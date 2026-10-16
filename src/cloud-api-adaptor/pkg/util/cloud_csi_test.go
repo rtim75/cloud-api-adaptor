@@ -39,7 +39,7 @@ func writeMountInfo(t *testing.T, dir, volumePath string, info map[string]interf
 
 func TestGetCSIVolumesForPod_EmptyDirectory(t *testing.T) {
 	setupDirectVolumesDir(t)
-	volumes := GetCSIVolumesForPod(map[string]string{})
+	volumes := GetCSIVolumesForPod(map[string]string{cri.SandboxUID: "pod-uid-123"})
 	assert.Nil(t, volumes)
 }
 
@@ -48,7 +48,7 @@ func TestGetCSIVolumesForPod_NonExistentDirectory(t *testing.T) {
 	KataDirectVolumesDir = "/nonexistent/path"
 	defer func() { KataDirectVolumesDir = origDir }()
 
-	volumes := GetCSIVolumesForPod(map[string]string{})
+	volumes := GetCSIVolumesForPod(map[string]string{cri.SandboxUID: "pod-uid-123"})
 	assert.Nil(t, volumes)
 }
 
@@ -61,7 +61,7 @@ func TestGetCSIVolumesForPod_SingleVolume(t *testing.T) {
 		"fstype": "ext4",
 	})
 
-	volumes := GetCSIVolumesForPod(map[string]string{})
+	volumes := GetCSIVolumesForPod(map[string]string{cri.SandboxUID: "pod-uid-123"})
 	require.Len(t, volumes, 1)
 	assert.Equal(t, "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Compute/disks/csi-vol-pvc-abc", volumes[0].DiskID)
 }
@@ -78,7 +78,7 @@ func TestGetCSIVolumesForPod_CloudVolumePathTakesPrecedence(t *testing.T) {
 		},
 	})
 
-	volumes := GetCSIVolumesForPod(map[string]string{})
+	volumes := GetCSIVolumesForPod(map[string]string{cri.SandboxUID: "pod-uid-123"})
 	require.Len(t, volumes, 1)
 	assert.Equal(t, "/subscriptions/sub1/disks/preferred-disk", volumes[0].DiskID)
 }
@@ -110,7 +110,8 @@ func TestGetCSIVolumesForPod_PodUIDFiltering(t *testing.T) {
 	assert.NotContains(t, diskIDs, "disk-B")
 }
 
-func TestGetCSIVolumesForPod_EmptyPodUIDReturnsAll(t *testing.T) {
+// TestGetCSIVolumesForPod_EmptyPodUIDReturnsNone prevents unfiltered node-wide volume discovery.
+func TestGetCSIVolumesForPod_EmptyPodUIDReturnsNone(t *testing.T) {
 	dir := setupDirectVolumesDir(t)
 
 	writeMountInfo(t, dir,
@@ -122,7 +123,7 @@ func TestGetCSIVolumesForPod_EmptyPodUIDReturnsAll(t *testing.T) {
 		map[string]interface{}{"device": "disk-B", "fstype": "ext4"})
 
 	volumes := GetCSIVolumesForPod(map[string]string{})
-	assert.Len(t, volumes, 2)
+	assert.Empty(t, volumes)
 }
 
 func TestGetCSIVolumesForPod_SkipsNonCSIVolumes(t *testing.T) {
@@ -136,7 +137,7 @@ func TestGetCSIVolumesForPod_SkipsNonCSIVolumes(t *testing.T) {
 		"/var/lib/kubelet/pods/pod-uid-123/volumes/kubernetes.io~configmap/config/mount",
 		map[string]interface{}{"device": "configmap-device", "fstype": "ext4"})
 
-	volumes := GetCSIVolumesForPod(map[string]string{})
+	volumes := GetCSIVolumesForPod(map[string]string{cri.SandboxUID: "pod-uid-123"})
 	require.Len(t, volumes, 1)
 	assert.Equal(t, "csi-disk", volumes[0].DiskID)
 }
@@ -148,7 +149,7 @@ func TestGetCSIVolumesForPod_SkipsMissingDiskID(t *testing.T) {
 		"/var/lib/kubelet/pods/pod-uid-123/volumes/kubernetes.io~csi/pvc-no-disk/mount",
 		map[string]interface{}{"fstype": "ext4"})
 
-	volumes := GetCSIVolumesForPod(map[string]string{})
+	volumes := GetCSIVolumesForPod(map[string]string{cri.SandboxUID: "pod-uid-123"})
 	assert.Empty(t, volumes)
 }
 
@@ -160,7 +161,7 @@ func TestGetCSIVolumesForPod_SkipsInvalidJSON(t *testing.T) {
 	require.NoError(t, os.MkdirAll(volDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(volDir, "mountInfo.json"), []byte("{invalid json"), 0o644))
 
-	volumes := GetCSIVolumesForPod(map[string]string{})
+	volumes := GetCSIVolumesForPod(map[string]string{cri.SandboxUID: "pod-uid-123"})
 	assert.Empty(t, volumes)
 }
 
@@ -173,7 +174,7 @@ func TestGetCSIVolumesForPod_SkipsNonBase64Directories(t *testing.T) {
 		"/var/lib/kubelet/pods/pod-uid-123/volumes/kubernetes.io~csi/pvc-ok/mount",
 		map[string]interface{}{"device": "good-disk", "fstype": "ext4"})
 
-	volumes := GetCSIVolumesForPod(map[string]string{})
+	volumes := GetCSIVolumesForPod(map[string]string{cri.SandboxUID: "pod-uid-123"})
 	require.Len(t, volumes, 1)
 	assert.Equal(t, "good-disk", volumes[0].DiskID)
 }
@@ -185,7 +186,7 @@ func TestGetCSIVolumesForPod_SkipsRegularFiles(t *testing.T) {
 	encoded := b64.URLEncoding.EncodeToString([]byte(volPath))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, encoded), []byte("not a dir"), 0o644))
 
-	volumes := GetCSIVolumesForPod(map[string]string{})
+	volumes := GetCSIVolumesForPod(map[string]string{cri.SandboxUID: "pod-uid-123"})
 	assert.Empty(t, volumes)
 }
 
@@ -205,7 +206,7 @@ func TestGetCSIVolumesForPod_MultipleVolumesCanonicalOrder(t *testing.T) {
 		})
 	}
 
-	volumes := GetCSIVolumesForPod(map[string]string{})
+	volumes := GetCSIVolumesForPod(map[string]string{cri.SandboxUID: "pod-uid-123"})
 	require.Len(t, volumes, 3)
 
 	for i := 0; i < len(volumes)-1; i++ {
@@ -221,7 +222,7 @@ func TestGetCSIVolumesForPod_ReturnType(t *testing.T) {
 		"/var/lib/kubelet/pods/pod-uid-123/volumes/kubernetes.io~csi/pvc-test/mount",
 		map[string]interface{}{"device": "test-disk", "fstype": "ext4"})
 
-	volumes := GetCSIVolumesForPod(map[string]string{})
+	volumes := GetCSIVolumesForPod(map[string]string{cri.SandboxUID: "pod-uid-123"})
 	require.Len(t, volumes, 1)
 	assert.IsType(t, provider.CloudVolume{}, volumes[0])
 }

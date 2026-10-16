@@ -91,6 +91,22 @@ func (s *PeerPodService) getPod(podname string, podns string) (*v1.Pod, error) {
 	return pod, nil
 }
 
+// GetPodUID looks up a named pod in its namespace and returns its nonempty UID.
+// An unavailable Kubernetes client, lookup failure or missing UID returns an error.
+func (s *PeerPodService) GetPodUID(ctx context.Context, name, namespace string) (string, error) {
+	if s == nil || s.client == nil {
+		return "", errors.New("Kubernetes client unavailable")
+	}
+	pod, err := s.client.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+	if pod.UID == "" {
+		return "", errors.New("pod UID is empty")
+	}
+	return string(pod.UID), nil
+}
+
 // make the pod an owner of a PeerPod
 func (s *PeerPodService) OwnPeerPod(podname string, podns string, instanceID string) error {
 	pod, err := s.getPod(podname, podns)
