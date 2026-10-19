@@ -5,6 +5,7 @@ package interceptor
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,93 +31,104 @@ func (i gcpFileInfo) Sys() any { return &i.raw }
 
 // TestGCPDiskDiscovery accepts only the exact whole data disk and rejects unsafe or unknown root topology.
 func TestGCPDiskDiscovery(t *testing.T) {
-	for _, scenario := range []string{"data", "missing", "wrong-id", "regular-file", "character-device", "partition", "root-disk", "verity-root", "unknown-root"} {
-		t.Run(scenario, func(t *testing.T) {
-			tmp := t.TempDir()
-			byID, sysRoot := filepath.Join(tmp, "by-id"), filepath.Join(tmp, "sys")
-			mkdir := func(path string) {
-				t.Helper()
-				if err := os.MkdirAll(path, 0755); err != nil {
-					t.Fatal(err)
-				}
-			}
-			link := func(target, path string) {
-				t.Helper()
-				if err := os.Symlink(target, path); err != nil {
-					t.Fatal(err)
-				}
-			}
-			touch := func(path string) {
-				t.Helper()
-				if err := os.WriteFile(path, nil, 0600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			mkdir(byID)
-			mkdir(filepath.Join(sysRoot, "dev/block"))
-			dataSys := filepath.Join(sysRoot, "devices/nvme2n1")
-			rootSys := filepath.Join(sysRoot, "devices/nvme0n1/nvme0n1p1")
-			mkdir(filepath.Join(dataSys, "slaves"))
-			mkdir(rootSys)
-			touch(filepath.Join(rootSys, "partition"))
-			link(dataSys, filepath.Join(sysRoot, "dev/block/259:2"))
-			rootLink := filepath.Join(sysRoot, "dev/block/259:1")
-			if scenario == "root-disk" {
-				rootSys = filepath.Join(dataSys, "nvme2n1p1")
-				mkdir(rootSys)
-				touch(filepath.Join(rootSys, "partition"))
-			}
-			if scenario == "verity-root" {
-				dm := filepath.Join(sysRoot, "devices/dm-0")
-				mkdir(filepath.Join(dm, "slaves"))
-				part := filepath.Join(dataSys, "nvme2n1p1")
-				mkdir(part)
-				touch(filepath.Join(part, "partition"))
-				link(part, filepath.Join(dm, "slaves/nvme2n1p1"))
-				rootSys = dm
-			}
-			if scenario != "unknown-root" {
-				link(rootSys, rootLink)
-			}
-			device := filepath.Join(tmp, "nvme2n1")
-			touch(device)
-			// A different disk is present even when the requested identity is absent.
-			other := filepath.Join(tmp, "nvme1n1")
-			touch(other)
-			link(other, filepath.Join(byID, "google-csi-other"))
-			if scenario != "missing" && scenario != "wrong-id" {
-				link(device, filepath.Join(byID, "google-csi-one"))
-			}
-			if scenario == "partition" {
-				touch(filepath.Join(dataSys, "partition"))
-			}
-			stat := func(path string) (os.FileInfo, error) {
-				if path == "/" {
-					return gcpFileInfo{raw: syscall.Stat_t{Dev: unix.Mkdev(259, 1)}}, nil
-				}
-				info, err := os.Stat(path)
-				if err != nil {
-					return nil, err
-				}
-				mode := os.ModeDevice
-				if scenario == "regular-file" {
-					mode = 0
-				}
-				if scenario == "character-device" {
-					mode |= os.ModeCharDevice
-				}
-				return gcpFileInfo{FileInfo: info, mode: mode, raw: syscall.Stat_t{Rdev: unix.Mkdev(259, 2)}}, nil
-			}
-			got, err := findGCPDataDiskAt(testGCPID, byID, sysRoot, stat)
-			if scenario == "data" {
-				if err != nil || got != device {
-					t.Fatalf("got %q, %v", got, err)
-				}
-			} else if err == nil || got != "" {
-				t.Fatalf("unsafe result %q, %v", got, err)
+	for _, layout := range []struct {
+		name, data, root, partition, other string
+		major                              uint32
+	}{
+		{"NVMe", "nvme2n1", "nvme0n1/nvme0n1p1", "nvme2n1p1", "nvme1n1", 259},
+		{"SCSI", "sdb", "sda/sda1", "sdb1", "sdc", 8},
+	} {
+		t.Run(layout.name, func(t *testing.T) {
+			for _, scenario := range []string{"data", "missing", "wrong-id", "regular-file", "character-device", "partition", "root-disk", "verity-root", "unknown-root"} {
+				t.Run(scenario, func(t *testing.T) {
+					tmp := t.TempDir()
+					byID, sysRoot := filepath.Join(tmp, "by-id"), filepath.Join(tmp, "sys")
+					mkdir := func(path string) {
+						t.Helper()
+						if err := os.MkdirAll(path, 0755); err != nil {
+							t.Fatal(err)
+						}
+					}
+					link := func(target, path string) {
+						t.Helper()
+						if err := os.Symlink(target, path); err != nil {
+							t.Fatal(err)
+						}
+					}
+					touch := func(path string) {
+						t.Helper()
+						if err := os.WriteFile(path, nil, 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+					mkdir(byID)
+					mkdir(filepath.Join(sysRoot, "dev/block"))
+					dataSys := filepath.Join(sysRoot, "devices/"+layout.data)
+					rootSys := filepath.Join(sysRoot, "devices/"+layout.root)
+					mkdir(filepath.Join(dataSys, "slaves"))
+					mkdir(rootSys)
+					touch(filepath.Join(rootSys, "partition"))
+					link(dataSys, filepath.Join(sysRoot, fmt.Sprintf("dev/block/%d:2", layout.major)))
+					rootLink := filepath.Join(sysRoot, fmt.Sprintf("dev/block/%d:1", layout.major))
+					if scenario == "root-disk" {
+						rootSys = filepath.Join(dataSys, layout.partition)
+						mkdir(rootSys)
+						touch(filepath.Join(rootSys, "partition"))
+					}
+					if scenario == "verity-root" {
+						dm := filepath.Join(sysRoot, "devices/dm-0")
+						mkdir(filepath.Join(dm, "slaves"))
+						part := filepath.Join(dataSys, layout.partition)
+						mkdir(part)
+						touch(filepath.Join(part, "partition"))
+						link(part, filepath.Join(dm, "slaves/"+layout.partition))
+						rootSys = dm
+					}
+					if scenario != "unknown-root" {
+						link(rootSys, rootLink)
+					}
+					device := filepath.Join(tmp, layout.data)
+					touch(device)
+					// A different disk is present even when the requested identity is absent.
+					other := filepath.Join(tmp, layout.other)
+					touch(other)
+					link(other, filepath.Join(byID, "google-csi-other"))
+					if scenario != "missing" && scenario != "wrong-id" {
+						link(device, filepath.Join(byID, "google-csi-one"))
+					}
+					if scenario == "partition" {
+						touch(filepath.Join(dataSys, "partition"))
+					}
+					stat := func(path string) (os.FileInfo, error) {
+						if path == "/" {
+							return gcpFileInfo{raw: syscall.Stat_t{Dev: unix.Mkdev(layout.major, 1)}}, nil
+						}
+						info, err := os.Stat(path)
+						if err != nil {
+							return nil, err
+						}
+						mode := os.ModeDevice
+						if scenario == "regular-file" {
+							mode = 0
+						}
+						if scenario == "character-device" {
+							mode |= os.ModeCharDevice
+						}
+						return gcpFileInfo{FileInfo: info, mode: mode, raw: syscall.Stat_t{Rdev: unix.Mkdev(layout.major, 2)}}, nil
+					}
+					got, err := findGCPDataDiskAt(testGCPID, byID, sysRoot, stat)
+					if scenario == "data" {
+						if err != nil || got != device {
+							t.Fatalf("got %q, %v", got, err)
+						}
+					} else if err == nil || got != "" {
+						t.Fatalf("unsafe result %q, %v", got, err)
+					}
+				})
 			}
 		})
 	}
+
 }
 
 // TestGCPDiscoveryRetryAndNoFallback retries delayed devices without selecting a different disk.

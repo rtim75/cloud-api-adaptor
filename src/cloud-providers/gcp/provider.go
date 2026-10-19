@@ -545,6 +545,7 @@ func hasAnyPrefix(s string, prefixes ...string) bool {
 // existingDataDisks maps CSI disk identities to existing zonal attachments.
 // API preflight and Instances.Insert additionally validate disk state and limits.
 // DeviceName is the guest lookup identity; it must not depend on list order.
+// Interface is omitted so Compute Engine selects a compatible interface for the VM.
 func existingDataDisks(project, zone string, volumes []provider.CloudVolume) ([]*computepb.AttachedDisk, error) {
 	var disks []*computepb.AttachedDisk
 	seen := make(map[string]bool, len(volumes))
@@ -567,7 +568,6 @@ func existingDataDisks(project, zone string, volumes []provider.CloudVolume) ([]
 			AutoDelete: proto.Bool(false),
 			Type:       proto.String(computepb.AttachedDisk_PERSISTENT.String()),
 			Mode:       proto.String(computepb.AttachedDisk_READ_WRITE.String()),
-			Interface:  proto.String(computepb.AttachedDisk_NVME.String()),
 		})
 	}
 	return disks, nil

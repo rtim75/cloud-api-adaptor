@@ -42,7 +42,7 @@ func TestExistingDataDisks(t *testing.T) {
 			if disk.Boot == nil || disk.GetBoot() || disk.AutoDelete == nil || disk.GetAutoDelete() {
 				t.Fatalf("data disk must explicitly be non-boot and retained: %v", disk)
 			}
-			if disk.InitializeParams != nil || disk.GetType() != "PERSISTENT" || disk.GetMode() != "READ_WRITE" || disk.GetInterface() != "NVME" {
+			if disk.InitializeParams != nil || disk.GetType() != "PERSISTENT" || disk.GetMode() != "READ_WRITE" || disk.Interface != nil {
 				t.Fatalf("unexpected attachment configuration: %v", disk)
 			}
 		}
@@ -112,6 +112,25 @@ func TestInsertInstancePreflight(t *testing.T) {
 				}
 				if r.Method == "POST" {
 					inserts.Add(1)
+					// The REST request must let Compute Engine choose the disk interface.
+					var body struct {
+						Disks []map[string]any `json:"disks"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Errorf("decode Insert request: %v", err)
+					}
+					wantDisks := 3
+					if tc.name == "no-volumes" {
+						wantDisks = 1
+					}
+					if len(body.Disks) != wantDisks {
+						t.Errorf("Insert disk count = %d, want %d", len(body.Disks), wantDisks)
+					}
+					for _, disk := range body.Disks {
+						if _, present := disk["interface"]; present {
+							t.Error("Insert request overrides the server-selected disk interface")
+						}
+					}
 					if tc.name != "no-volumes" && gets.Load() != 3 {
 						t.Errorf("Insert before all preflight GETs: %d", gets.Load())
 					}
