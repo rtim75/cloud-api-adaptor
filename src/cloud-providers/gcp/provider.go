@@ -436,9 +436,8 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 	if err != nil {
 		return nil, fmt.Errorf("creating instance: %w", err)
 	}
-	err = op.Wait(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("waiting for Instances.Insert error: %s. req: %v", err, insertReq)
+	if err := waitForInstanceInsert(ctx, op, insertReq); err != nil {
+		return nil, err
 	}
 	logger.Printf("created an instance %s for sandbox %s", instanceName, sandboxID)
 
@@ -613,6 +612,16 @@ func validateReplicaZones(disk *computepb.Disk, project, region, zone string) er
 	}
 	if len(seen) != 2 || !seen[zone] {
 		return fmt.Errorf("PodVM zone %q is not a disk replica zone", zone)
+	}
+	return nil
+}
+
+// Report only placement/operation identifiers: the request metadata contains
+// cloud-init with private TLS material and must never be serialized into errors.
+func waitForInstanceInsert(ctx context.Context, op *compute.Operation, req *computepb.InsertInstanceRequest) error {
+	if err := op.Wait(ctx); err != nil {
+		return fmt.Errorf("waiting for Instances.Insert (project=%s zone=%s instance=%s operation=%s): %w",
+			req.GetProject(), req.GetZone(), req.GetInstanceResource().GetName(), op.Name(), err)
 	}
 	return nil
 }
