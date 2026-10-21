@@ -21,7 +21,8 @@ type diskBudget struct {
 	hyperdisk      bool
 }
 
-func (b *diskBudget) add(path string, size, iops, throughput int64, boot bool) error {
+func (b *diskBudget) add(path string, size, iops, throughput int64, boot bool, regionalScopes ...bool) error {
+	regional := len(regionalScopes) > 0 && regionalScopes[0]
 	kind := path[strings.LastIndex(path, "/")+1:]
 	if kind == "" && boot {
 		kind = "pd-standard" // Compute API boot default.
@@ -31,14 +32,28 @@ func (b *diskBudget) add(path string, size, iops, throughput int64, boot bool) e
 	case "pd-standard", "pd-balanced", "pd-ssd":
 	case "pd-extreme":
 		minSize = 500
-	case "hyperdisk-balanced":
+	case "hyperdisk-balanced", "hyperdisk-balanced-high-availability":
 		minSize = 4
 	case "hyperdisk-extreme":
 		minSize = 64
 	case "hyperdisk-throughput":
 		minSize, maxSize = 2048, 32768
 	default:
-		return fmt.Errorf("unsupported type %q (zonal CSI disks required)", kind)
+		return fmt.Errorf("unsupported type %q", kind)
+	}
+	if regional {
+		switch kind {
+		case "pd-standard":
+			minSize = 200
+		case "pd-balanced", "pd-ssd", "hyperdisk-balanced-high-availability":
+		default:
+			return fmt.Errorf("unsupported regional disk type %q", kind)
+		}
+		if !strings.HasPrefix(kind, "hyperdisk-") && !(strings.HasPrefix(b.machine, "e2-") || strings.HasPrefix(b.machine, "n1-") || strings.HasPrefix(b.machine, "n2-") || strings.HasPrefix(b.machine, "n2d-")) {
+			return fmt.Errorf("regional PD requires E2, N1, N2 or N2D")
+		}
+	} else if kind == "hyperdisk-balanced-high-availability" {
+		return fmt.Errorf("unsupported type: HA disks require regional scope")
 	}
 	if size < minSize || size > maxSize {
 		return fmt.Errorf("invalid size %d GiB for %s (%d..%d)", size, kind, minSize, maxSize)
@@ -116,12 +131,17 @@ func diskPerformance(kind string, size, i, t int64) error {
 	switch kind {
 	case "pd-extreme":
 		invalid = (i != 0 && (i < 2500 || i > 120000)) || t != 0
-	case "hyperdisk-balanced":
-		lo, hi := int64(3000), min(500*size, 160000)
+	case "hyperdisk-balanced", "hyperdisk-balanced-high-availability":
+		ceiling := int64(160000)
+		ha := kind == "hyperdisk-balanced-high-availability"
+		if ha {
+			ceiling = 100000
+		}
+		lo, hi := int64(3000), min(500*size, ceiling)
 		if size < 6 {
 			lo, hi = 500*size, 500*size
 		}
-		invalid = (i != 0 && (i < lo || i > hi)) || (t != 0 && (t < 140 || t > 2400 || 4*t > hi || (i != 0 && (4*t > i || i > 256*t))))
+		invalid = (i != 0 && (i < lo || i > hi)) || (t != 0 && (t < 140 || t > 2400 || 4*t > hi || (i != 0 && (4*t > i || (!ha && i > 256*t)))))
 	case "hyperdisk-extreme":
 		invalid = t != 0 || (i != 0 && (i < 2*size || i > min(1200*size, 350000)))
 	case "hyperdisk-throughput":

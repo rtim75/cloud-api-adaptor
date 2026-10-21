@@ -30,7 +30,12 @@ func (i gcpFileInfo) Mode() os.FileMode { return i.mode }
 func (i gcpFileInfo) Sys() any { return &i.raw }
 
 // TestGCPDiskDiscovery accepts only the exact whole data disk and rejects unsafe or unknown root topology.
-func TestGCPDiskDiscovery(t *testing.T) {
+func TestGCPDiskDiscovery(t *testing.T) { testGCPDiskDiscovery(t, testGCPID) }
+func TestGCPRegionalDiskDiscovery(t *testing.T) {
+	testGCPDiskDiscovery(t, "projects/test-project/regions/us-central1/disks/csi-one")
+}
+
+func testGCPDiskDiscovery(t *testing.T, diskID string) {
 	for _, layout := range []struct {
 		name, data, root, partition, other string
 		major                              uint32
@@ -116,7 +121,7 @@ func TestGCPDiskDiscovery(t *testing.T) {
 						}
 						return gcpFileInfo{FileInfo: info, mode: mode, raw: syscall.Stat_t{Rdev: unix.Mkdev(layout.major, 2)}}, nil
 					}
-					got, err := findGCPDataDiskAt(testGCPID, byID, sysRoot, stat)
+					got, err := findGCPDataDiskAt(diskID, byID, sysRoot, stat)
 					if scenario == "data" {
 						if err != nil || got != device {
 							t.Fatalf("got %q, %v", got, err)

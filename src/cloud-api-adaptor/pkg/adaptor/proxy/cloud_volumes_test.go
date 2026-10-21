@@ -465,7 +465,7 @@ func TestGCPVolumeIdentityThroughAttachmentAndProxy(t *testing.T) {
 	service, cleanup := setupMockAgentAndService(t)
 	defer cleanup()
 	const pod = "gcp-pod"
-	ids := []string{"projects/test-project/zones/us-central1-a/disks/csi-two", "projects/test-project/zones/us-central1-a/disks/csi-one"}
+	ids := []string{"projects/test-project/regions/us-central1/disks/csi-two", "projects/test-project/zones/us-central1-a/disks/csi-one"}
 	var mounts []*pb.Mount
 	for i, id := range ids {
 		volPath := "/var/lib/kubelet/pods/" + pod + "/volumes/kubernetes.io~csi/" + filepath.Base(id) + "/mount"

@@ -14,10 +14,22 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-var gcpDiskPath = regexp.MustCompile(`^projects/([a-z][a-z0-9-]{4,28}[a-z0-9])/zones/([a-z][a-z0-9-]*[0-9]-[a-z])/disks/([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)$`)
+var gcpDiskPath = regexp.MustCompile(`^projects/([a-z][a-z0-9-]{4,28}[a-z0-9])/(zones|regions)/([a-z][a-z0-9-]*[0-9](?:-[a-z])?)/disks/([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)$`)
 
-// findGCPDataDisk resolves the exact google-<deviceName> symlink for a zonal
-// disk and rejects partitions, non-block devices and disks backing the root filesystem.
+func gcpDiskParts(path string) []string {
+	parts := gcpDiskPath.FindStringSubmatch(path)
+	if parts == nil {
+		return nil
+	}
+	isZone := strings.LastIndex(parts[3], "-") == len(parts[3])-2
+	if (parts[2] == "zones") != isZone {
+		return nil
+	}
+	return parts
+}
+
+// findGCPDataDisk resolves the exact google-<deviceName> symlink for zonal or
+// regional disks and rejects partitions, non-block devices and root backing disks.
 func findGCPDataDisk(diskID string) (string, error) {
 	return findGCPDataDiskAt(diskID, "/dev/disk/by-id", "/sys", os.Stat)
 }
@@ -25,11 +37,11 @@ func findGCPDataDisk(diskID string) (string, error) {
 // findGCPDataDiskAt validates the by-id target and root exclusion using the given
 // device and sysfs directories. The stat callback permits testing without block devices.
 func findGCPDataDiskAt(diskID, byID, sysRoot string, stat func(string) (os.FileInfo, error)) (string, error) {
-	parts := gcpDiskPath.FindStringSubmatch(diskID)
+	parts := gcpDiskParts(diskID)
 	if parts == nil {
 		return "", fmt.Errorf("invalid GCP disk path %q", diskID)
 	}
-	device, err := filepath.EvalSymlinks(filepath.Join(byID, "google-"+parts[3]))
+	device, err := filepath.EvalSymlinks(filepath.Join(byID, "google-"+parts[4]))
 	if err != nil {
 		return "", fmt.Errorf("finding exact GCP device: %w", err)
 	}

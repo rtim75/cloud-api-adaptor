@@ -440,7 +440,7 @@ func findDataDiskDeviceWithGCP(lunIdx int, diskID string, gcpLookup func(string)
 	// may not have appeared yet. Invalid GCP-looking IDs must not use LUN fallback.
 	if !strings.Contains(diskID, "projects/") {
 		provider = detectCloudProvider()
-	} else if gcpDiskPath.FindStringSubmatch(diskID) == nil {
+	} else if gcpDiskParts(diskID) == nil {
 		return "", fmt.Errorf("invalid GCP disk path %q", diskID)
 	}
 	logger.Printf("Cloud provider detected: %s (LUN %d, diskID %s)", provider, lunIdx, diskID)
