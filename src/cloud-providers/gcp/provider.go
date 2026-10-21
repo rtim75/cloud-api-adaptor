@@ -586,18 +586,16 @@ func (p *gcpProvider) insertInstance(ctx context.Context, req *computepb.InsertI
 		machine := resource.GetMachineType()
 		machine = machine[strings.LastIndex(machine, "/")+1:]
 		bootSize := resource.GetDisks()[0].GetInitializeParams().GetDiskSizeGb()
-		if err := p.validateVolumes(ctx, machine, bootSize, volumes); err != nil {
+		if err := p.validateVolumes(ctx, machine, bootSize, resource.GetDisks()[0].GetInitializeParams().GetDiskType(), resource.GetConfidentialInstanceConfig(), volumes); err != nil {
 			return nil, fmt.Errorf("CSI disk preflight: %w", err)
 		}
 	}
 	return p.instancesClient.Insert(ctx, req)
 }
 
-// validateVolumes checks that zonal pd-balanced disks are READY and unattached,
-// and that their count and total capacity, including boot, fit the machine type.
-// These read-only checks do not cover all interface or confidential VM constraints;
-// Instances.Insert remains authoritative and can reject changes after preflight.
-func (p *gcpProvider) validateVolumes(ctx context.Context, machine string, bootSize int64, volumes []provider.CloudVolume) error {
+// validateVolumes checks zonal disk state and PD/Hyperdisk limits including boot.
+// Instances.Insert validates remaining machine constraints and attachment races.
+func (p *gcpProvider) validateVolumes(ctx context.Context, machine string, bootSize int64, bootType string, confidential *computepb.ConfidentialInstanceConfig, volumes []provider.CloudVolume) error {
 	if len(volumes) == 0 {
 		return nil
 	}
@@ -618,17 +616,10 @@ func (p *gcpProvider) validateVolumes(ctx context.Context, machine string, bootS
 	if err != nil {
 		return fmt.Errorf("reading machine type %q: %w", machine, err)
 	}
-	countLimit, sizeLimit := mt.GetMaximumPersistentDisks(), mt.GetMaximumPersistentDisksSizeGb()
-	if countLimit <= 0 || sizeLimit <= 0 {
-		return fmt.Errorf("machine type %q does not report usable Persistent Disk limits", machine)
+	budget := diskBudget{machine: machine, mt: mt, confidential: confidential}
+	if err := budget.add(bootType, bootSize, 0, 0, true); err != nil {
+		return fmt.Errorf("boot disk exceeds or violates limits: %w", err)
 	}
-	if int64(len(volumes))+1 > int64(countLimit) {
-		return fmt.Errorf("machine type %q allows %d Persistent Disks; requested %d including boot", machine, countLimit, len(volumes)+1)
-	}
-	if bootSize > sizeLimit {
-		return fmt.Errorf("boot disk exceeds machine type %q total disk limit %d GiB", machine, sizeLimit)
-	}
-	remaining := sizeLimit - bootSize
 	disksClient, err := compute.NewDisksRESTClient(ctx, p.clientOptions...)
 	if err != nil {
 		return fmt.Errorf("creating disks client: %w", err)
@@ -646,16 +637,9 @@ func (p *gcpProvider) validateVolumes(ctx context.Context, machine string, bootS
 		if len(disk.GetUsers()) > 0 {
 			return fmt.Errorf("disk %q is already attached to %v", vol.DiskID, disk.GetUsers())
 		}
-		if !strings.HasSuffix(disk.GetType(), "/diskTypes/pd-balanced") {
-			return fmt.Errorf("disk %q has unsupported type %q; expected pd-balanced", vol.DiskID, disk.GetType())
+		if err := budget.add(disk.GetType(), disk.GetSizeGb(), disk.GetProvisionedIops(), disk.GetProvisionedThroughput(), false); err != nil {
+			return fmt.Errorf("disk %q: %w", vol.DiskID, err)
 		}
-		if disk.GetSizeGb() <= 0 {
-			return fmt.Errorf("disk %q reports invalid size %d", vol.DiskID, disk.GetSizeGb())
-		}
-		if disk.GetSizeGb() > remaining {
-			return fmt.Errorf("disks including boot exceed machine type %q total limit %d GiB", machine, sizeLimit)
-		}
-		remaining -= disk.GetSizeGb()
 	}
 	return nil
 }

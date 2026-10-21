@@ -93,7 +93,7 @@ func TestInsertInstancePreflight(t *testing.T) {
 		want   string
 		insert bool
 	}{
-		{"success", "", true}, {"exact-size-limit", "", true}, {"no-volumes", "", true},
+		{"success", "", true}, {"ssd", "", true}, {"hyperdisk", "", true}, {"tdx-ssd", "TDX supports only", false}, {"exact-size-limit", "", true}, {"no-volumes", "", true},
 		{"missing", "reading disk", false}, {"forbidden", "reading disk", false},
 		{"in-use", "already attached", false}, {"not-ready", "not READY", false},
 		{"wrong-type", "unsupported type", false}, {"invalid-size", "invalid size", false},
@@ -142,12 +142,15 @@ func TestInsertInstancePreflight(t *testing.T) {
 					return
 				}
 				gets.Add(1)
-				if strings.HasSuffix(r.URL.Path, "/machineTypes/n2d-standard-2") {
+				if strings.Contains(r.URL.Path, "/machineTypes/") {
 					if tc.name == "machine-forbidden" {
 						fail(403, "denied")
 						return
 					}
 					limit, size := 32, int64(100)
+					if tc.name == "hyperdisk" {
+						limit, size = 0, 0
+					}
 					if tc.name == "count-limit" {
 						limit = 2
 					}
@@ -163,7 +166,7 @@ func TestInsertInstancePreflight(t *testing.T) {
 					if tc.name == "unknown-limits" {
 						limit = 0
 					}
-					_ = json.NewEncoder(w).Encode(map[string]any{"maximumPersistentDisks": limit, "maximumPersistentDisksSizeGb": fmt.Sprint(size)})
+					_ = json.NewEncoder(w).Encode(map[string]any{"guestCpus": 4, "maximumPersistentDisks": limit, "maximumPersistentDisksSizeGb": fmt.Sprint(size)})
 					return
 				}
 				if !strings.HasPrefix(r.URL.Path, "/compute/v1/projects/test-project/zones/us-central1-a/disks/") {
@@ -181,12 +184,18 @@ func TestInsertInstancePreflight(t *testing.T) {
 				}
 				disk := map[string]any{"status": "READY", "sizeGb": "10", "type": "projects/test-project/zones/us-central1-a/diskTypes/pd-balanced"}
 				switch tc.name {
+				case "ssd", "tdx-ssd":
+					disk["type"] = "zones/us-central1-a/diskTypes/pd-ssd"
+				case "hyperdisk":
+					disk["type"] = "zones/us-central1-a/diskTypes/hyperdisk-throughput"
+					disk["sizeGb"] = "2048"
+					disk["provisionedThroughput"] = "180"
 				case "in-use":
 					disk["users"] = []string{"projects/test-project/zones/us-central1-a/instances/other"}
 				case "not-ready":
 					disk["status"] = "CREATING"
 				case "wrong-type":
-					disk["type"] = "zones/us-central1-a/diskTypes/pd-ssd"
+					disk["type"] = "zones/us-central1-a/diskTypes/hyperdisk-balanced-high-availability"
 				case "invalid-size":
 					disk["sizeGb"] = "0"
 				}
@@ -210,6 +219,13 @@ func TestInsertInstancePreflight(t *testing.T) {
 			}
 			boot := &computepb.AttachedDisk{Boot: proto.Bool(true), InitializeParams: &computepb.AttachedDiskInitializeParams{DiskSizeGb: proto.Int64(20)}}
 			req := &computepb.InsertInstanceRequest{Project: "test-project", Zone: "us-central1-a", InstanceResource: &computepb.Instance{MachineType: proto.String("zones/us-central1-a/machineTypes/n2d-standard-2"), Disks: append([]*computepb.AttachedDisk{boot}, data...)}}
+			if tc.name == "hyperdisk" {
+				req.InstanceResource.MachineType = proto.String("zones/us-central1-a/machineTypes/c4d-standard-4")
+				boot.InitializeParams.DiskType = proto.String("zones/us-central1-a/diskTypes/hyperdisk-balanced")
+			}
+			if tc.name == "tdx-ssd" {
+				req.InstanceResource.ConfidentialInstanceConfig = &computepb.ConfidentialInstanceConfig{EnableConfidentialCompute: proto.Bool(true), ConfidentialInstanceType: proto.String("TDX")}
+			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			if tc.name == "cancelled" {
