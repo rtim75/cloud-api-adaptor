@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/auth/credentials"
@@ -34,6 +35,7 @@ type gcpProvider struct {
 	serviceConfig   *Config
 	instancesClient *compute.InstancesClient
 	clientOptions   []option.ClientOption
+	pendingInserts  sync.Map
 }
 
 func (p *gcpProvider) ConfigVerifier() error {
@@ -434,10 +436,13 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 
 	op, err := p.insertInstance(ctx, insertReq, spec.Volumes)
 	if err != nil {
+		if _, pending := p.pendingInserts.Load(instanceName); pending {
+			return &provider.Instance{ID: instanceName, Name: instanceName}, fmt.Errorf("creating instance: %w", err)
+		}
 		return nil, fmt.Errorf("creating instance: %w", err)
 	}
-	if err := waitForInstanceInsert(ctx, op, insertReq); err != nil {
-		return nil, err
+	if err := p.waitForTrackedInstanceInsert(ctx, op, insertReq); err != nil {
+		return &provider.Instance{ID: instanceName, Name: instanceName}, err
 	}
 	logger.Printf("created an instance %s for sandbox %s", instanceName, sandboxID)
 
@@ -511,6 +516,9 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 }
 
 func (p *gcpProvider) DeleteInstance(ctx context.Context, instanceID string) error {
+	if err := p.finishPendingInsert(ctx, instanceID); err != nil {
+		return err
+	}
 	req := &computepb.DeleteInstanceRequest{
 		Project:  p.serviceConfig.ProjectID,
 		Zone:     p.serviceConfig.Zone,
@@ -518,6 +526,9 @@ func (p *gcpProvider) DeleteInstance(ctx context.Context, instanceID string) err
 	}
 	op, err := p.instancesClient.Delete(ctx, req)
 	if err != nil {
+		if instanceMissing(err) {
+			return nil
+		}
 		return fmt.Errorf("Instances.Delete error: %w, req: %v", err, req)
 	}
 	err = op.Wait(ctx)
@@ -641,7 +652,19 @@ func (p *gcpProvider) insertInstance(ctx context.Context, req *computepb.InsertI
 			return nil, fmt.Errorf("CSI disk preflight: %w", err)
 		}
 	}
-	return p.instancesClient.Insert(ctx, req)
+	name := req.GetInstanceResource().GetName()
+	pending := &instanceInsert{}
+	if _, exists := p.pendingInserts.LoadOrStore(name, pending); exists {
+		return nil, fmt.Errorf("instance %s already has an unresolved insert", name)
+	}
+	pending.mutex.Lock()
+	defer pending.mutex.Unlock()
+	op, err := p.instancesClient.Insert(ctx, req)
+	pending.operation = op
+	if definitiveInsertRejection(err) {
+		p.pendingInserts.CompareAndDelete(name, pending)
+	}
+	return op, err
 }
 
 // validateVolumes checks zonal/regional disk state and PD/Hyperdisk limits including boot.

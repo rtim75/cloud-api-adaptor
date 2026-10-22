@@ -138,6 +138,11 @@ func (s *cloudService) GetInstanceID(ctx context.Context, podNamespace, podName 
 
 	for {
 		for _, sandbox := range s.sandboxes {
+			// Failed-start records remain available for StopVM retries, but must not
+			// shadow the current GCP owner when a replacement is running.
+			if s.tracksInstanceLifecycle() && (sandbox.lifecycle == nil || sandbox.lifecycle.deleted) {
+				continue
+			}
 			if sandbox.podNamespace == podNamespace && sandbox.podName == podName {
 				return sandbox.instanceID, nil
 			}
@@ -359,8 +364,14 @@ func (s *cloudService) StartVM(ctx context.Context, req *pb.StartVMRequest) (res
 		return nil, fmt.Errorf("getting sandbox: %w", err)
 	}
 
+	lease, err := s.beginInstanceLifecycle(sid, sandbox)
+	if err != nil {
+		return nil, err
+	}
+	if lease != nil {
+		defer lease.operation.Unlock()
+	}
 	instance, err := s.provider.CreateInstance(ctx, sandbox.podName, string(sid), sandbox.cloudConfig, sandbox.spec)
-
 	// Cleanup instance if it was created but an error occurred (either during creation or later)
 	defer func() {
 		if err != nil && instance != nil && instance.ID != "" {
@@ -369,13 +380,27 @@ func (s *cloudService) StartVM(ctx context.Context, req *pb.StartVMRequest) (res
 			defer cancel()
 			if delErr := s.provider.DeleteInstance(cleanupCtx, instance.ID); delErr != nil {
 				logger.Printf("failed to cleanup instance %s: %v", instance.ID, delErr)
-			} else if s.ppService != nil {
-				if relErr := s.ppService.ReleasePeerPod(sandbox.podName, sandbox.podNamespace, instance.ID); relErr != nil {
-					logger.Printf("failed to release PeerPod during cleanup: %v", relErr)
+			} else {
+				if s.ppService != nil {
+					if relErr := s.ppService.ReleasePeerPod(sandbox.podName, sandbox.podNamespace, instance.ID); relErr != nil {
+						logger.Printf("failed to release PeerPod during cleanup: %v", relErr)
+					}
+				}
+				if lease != nil {
+					s.completeInstanceLifecycle(lease)
 				}
 			}
+		} else if err != nil && lease != nil {
+			s.completeInstanceLifecycle(lease)
 		}
 	}()
+
+	// Remember partial GCP creates too, so a failed cleanup can be retried.
+	if lease != nil && instance != nil && instance.ID != "" {
+		if setErr := s.setInstance(sid, instance.ID, instance.Name); setErr != nil {
+			return nil, setErr
+		}
+	}
 
 	if err != nil {
 		return nil, fmt.Errorf("creating an instance : %w", err)
@@ -446,6 +471,10 @@ func (s *cloudService) StopVM(ctx context.Context, req *pb.StopVMRequest) (*pb.S
 		err = fmt.Errorf("stopping VM: %v", err)
 		logger.Print(err)
 		return nil, err
+	}
+
+	if s.tracksInstanceLifecycle() {
+		return s.stopVMWithLifecycle(ctx, sid, sandbox)
 	}
 
 	if err := sandbox.agentProxy.Shutdown(); err != nil {

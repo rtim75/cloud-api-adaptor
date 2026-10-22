@@ -24,19 +24,21 @@ type Service interface {
 }
 
 type cloudService struct {
-	provider     provider.Provider
-	proxyFactory proxy.Factory
-	workerNode   podnetwork.WorkerNode
-	sandboxes    map[sandboxID]*sandbox
-	cond         *sync.Cond
-	mutex        sync.Mutex
-	ppService    *k8sops.PeerPodService
-	serverConfig *ServerConfig
+	provider       provider.Provider
+	proxyFactory   proxy.Factory
+	workerNode     podnetwork.WorkerNode
+	sandboxes      map[sandboxID]*sandbox
+	instanceOwners map[podOwner]*instanceLifecycle
+	cond           *sync.Cond
+	mutex          sync.Mutex
+	ppService      *k8sops.PeerPodService
+	serverConfig   *ServerConfig
 }
 
 type sandboxID string
 
 type sandbox struct {
+	lifecycle    *instanceLifecycle
 	agentProxy   proxy.AgentProxy
 	podNetwork   *tunneler.Config
 	cloudConfig  *cloudinit.CloudConfig
