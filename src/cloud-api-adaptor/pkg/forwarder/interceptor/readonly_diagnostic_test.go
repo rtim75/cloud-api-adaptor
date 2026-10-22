@@ -17,10 +17,9 @@ import (
 )
 
 // Run only in a private user+mount namespace, never against a host /run:
-// unshare -Urnm <test-binary> -test.run '^TestLocalCloudVolumeReadonlyBind$'
-// The block-device mount is replaced with a bind fixture; production APF rewrites
-// the request. Linux then enforces its resulting OCI ro/rw bind options. This is
-// local enforcement evidence, not a real Kata-agent/cloud Pod acceptance test.
+// CAA_PRIVATE_MOUNT_DIAGNOSTIC=1 unshare -Urnm <test-binary> -test.run '^TestLocalCloudVolumeReadonlyBind$'
+// Uses a bind fixture to check APF request rewriting and Linux ro/rw enforcement.
+// The test does not run Kata-agent or attach a cloud disk.
 func TestLocalCloudVolumeReadonlyBind(t *testing.T) {
 	if os.Getenv("CAA_PRIVATE_MOUNT_DIAGNOSTIC") != "1" {
 		t.Skip("requires explicit private namespace runner")

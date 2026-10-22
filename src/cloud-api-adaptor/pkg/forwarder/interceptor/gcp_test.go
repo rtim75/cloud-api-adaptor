@@ -29,7 +29,6 @@ func (i gcpFileInfo) Mode() os.FileMode { return i.mode }
 // Sys returns fixture device numbers for sysfs and root-device checks.
 func (i gcpFileInfo) Sys() any { return &i.raw }
 
-// TestGCPDiskDiscovery accepts only the exact whole data disk and rejects unsafe or unknown root topology.
 func TestGCPDiskDiscovery(t *testing.T) { testGCPDiskDiscovery(t, testGCPID) }
 func TestGCPRegionalDiskDiscovery(t *testing.T) {
 	testGCPDiskDiscovery(t, "projects/test-project/regions/us-central1/disks/csi-one")
@@ -136,7 +135,6 @@ func testGCPDiskDiscovery(t *testing.T, diskID string) {
 
 }
 
-// TestGCPDiscoveryRetryAndNoFallback retries delayed devices without selecting a different disk.
 func TestGCPDiscoveryRetryAndNoFallback(t *testing.T) {
 	t.Setenv("CAA_DISK_DETECT_MAX_ATTEMPTS", "3")
 	t.Setenv("CAA_DISK_DETECT_RETRY_DELAY", "1ns")
@@ -162,7 +160,6 @@ func TestGCPDiscoveryRetryAndNoFallback(t *testing.T) {
 	}
 }
 
-// TestGCPDiscoveryRejectsMalformedIdentityBeforeLookup prevents malformed resource IDs from reaching discovery.
 func TestGCPDiscoveryRejectsMalformedIdentityBeforeLookup(t *testing.T) {
 	for _, id := range []string{testGCPID + "/", "/" + testGCPID, "https://compute.googleapis.com/compute/v1/" + testGCPID, strings.Replace(testGCPID, "csi-one", "..", 1), strings.Replace(testGCPID, "csi-one", "disk/other", 1)} {
 		got, err := findDataDiskDeviceWithGCP(0, id, func(string) (string, error) { t.Fatal("lookup called for invalid ID"); return "", nil })

@@ -23,7 +23,6 @@ func (f testPodUIDResolver) GetPodUID(ctx context.Context, name, namespace strin
 	return f(ctx, name, namespace)
 }
 
-// TestResolveCSIPodAnnotations checks UID resolution, input preservation and lookup failures.
 func TestResolveCSIPodAnnotations(t *testing.T) {
 	dir := t.TempDir()
 	old := util.KataDirectVolumesDir
@@ -52,7 +51,6 @@ func TestResolveCSIPodAnnotations(t *testing.T) {
 	}
 }
 
-// TestResolvedPodUIDIsolatesCSIVolumes prevents another pod's publication from entering attachment requests.
 func TestResolvedPodUIDIsolatesCSIVolumes(t *testing.T) {
 	dir := t.TempDir()
 	old := util.KataDirectVolumesDir
@@ -73,8 +71,6 @@ func TestResolvedPodUIDIsolatesCSIVolumes(t *testing.T) {
 	require.Empty(t, util.GetCSIVolumesForPod(annotations))
 }
 
-// TestNoCSIPublicationsNeedsNoPodUID permits an absent or empty publication directory
-// and rejects scan errors or unresolved ownership when publications exist.
 func TestNoCSIPublicationsNeedsNoPodUID(t *testing.T) {
 	old := util.KataDirectVolumesDir
 	t.Cleanup(func() { util.KataDirectVolumesDir = old })

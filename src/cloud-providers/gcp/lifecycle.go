@@ -14,8 +14,7 @@ import (
 	"google.golang.org/api/googleapi"
 )
 
-// The cloud service may release ownership only after this provider confirms
-// deletion. AWS/Azure do not opt in to the changed service lifecycle contract.
+// InstanceDeletionWaitsForCompletion enables owner fencing until deletion completes.
 func (*gcpProvider) InstanceDeletionWaitsForCompletion() bool { return true }
 
 type instanceInsert struct {
@@ -39,9 +38,8 @@ func (p *gcpProvider) waitForTrackedInstanceInsert(ctx context.Context, op *comp
 	return err
 }
 
-// A missing instance is not enough while its insert operation can still finish.
-// An Insert whose response was lost has no known operation to wait on: preserve
-// the owner for operator reconciliation rather than guessing from a single 404.
+// A pending Insert can complete after an instance 404. If its operation ID is
+// unknown, retain ownership until the operator reconciles the request.
 func (p *gcpProvider) finishPendingInsert(ctx context.Context, name string) error {
 	record, ok := p.pendingInserts.Load(name)
 	if !ok {

@@ -33,8 +33,7 @@ func (p *restartDiagnosticProvider) DeleteInstance(ctx context.Context, id strin
 	return nil
 }
 
-// Diagnostic boundary: this is intentionally not an assertion that restart
-// recovery is safe. The service has no durable owner inventory to reload.
+// Owners are process-local; a restarted service can admit a second instance.
 func TestDiagnosticOwnerFenceDoesNotSurviveRestart(t *testing.T) {
 	p := &restartDiagnosticProvider{strictDiagnosticProvider: &strictDiagnosticProvider{&diagnosticProvider{}}, active: map[string]bool{}}
 	before := diagnosticService(t, p)

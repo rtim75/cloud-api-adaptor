@@ -20,7 +20,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// TestExistingDataDisks checks stable device names and retained, non-boot NVMe attachments.
 func TestExistingDataDisks(t *testing.T) {
 	const prefix = "projects/test-project/zones/us-central1-a/disks/"
 	for _, names := range [][]string{nil, {"csi-cbluaekrkfbgoxkab4yncgutnzmnzx6v5vmfphua7ew5sj33732q"}, {"csi-two", "csi-one"}} {
@@ -49,7 +48,6 @@ func TestExistingDataDisks(t *testing.T) {
 	}
 }
 
-// TestExistingDataDisksRejectInvalid rejects malformed, duplicate and cross-project or cross-zone disk IDs.
 func TestExistingDataDisksRejectInvalid(t *testing.T) {
 	const valid = "projects/test-project/zones/us-central1-a/disks/csi-one"
 	for _, id := range []string{

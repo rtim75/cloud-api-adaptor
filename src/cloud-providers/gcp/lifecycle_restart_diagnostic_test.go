@@ -16,8 +16,7 @@ import (
 	"google.golang.org/api/option"
 )
 
-// Diagnostic boundary, not persistent recovery acceptance: a fresh provider
-// cannot recover the unknown Insert fence from the old provider's memory.
+// A fresh provider has no pending-insert state and cannot fence an unknown Insert.
 func TestDiagnosticUnknownInsertFenceDoesNotSurviveRestart(t *testing.T) {
 	var visible atomic.Bool
 	var deletes atomic.Int32

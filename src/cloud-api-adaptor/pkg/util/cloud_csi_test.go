@@ -110,7 +110,6 @@ func TestGetCSIVolumesForPod_PodUIDFiltering(t *testing.T) {
 	assert.NotContains(t, diskIDs, "disk-B")
 }
 
-// TestGetCSIVolumesForPod_EmptyPodUIDReturnsNone prevents unfiltered node-wide volume discovery.
 func TestGetCSIVolumesForPod_EmptyPodUIDReturnsNone(t *testing.T) {
 	dir := setupDirectVolumesDir(t)
 

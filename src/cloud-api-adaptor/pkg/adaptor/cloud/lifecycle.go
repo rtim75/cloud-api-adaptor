@@ -11,8 +11,7 @@ import (
 	pb "github.com/kata-containers/kata-containers/src/runtime/protocols/hypervisor"
 )
 
-// Only providers with terminal deletion semantics opt in. Other providers keep
-// their existing StartVM/StopVM behavior.
+// terminalInstanceDeletion marks providers that wait for deletion to finish.
 type terminalInstanceDeletion interface {
 	InstanceDeletionWaitsForCompletion() bool
 }
