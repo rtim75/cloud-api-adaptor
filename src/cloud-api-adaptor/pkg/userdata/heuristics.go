@@ -3,6 +3,7 @@ package userdata
 import (
 	"context"
 	"os"
+	"strings"
 
 	"github.com/confidential-containers/cloud-api-adaptor/src/cloud-api-adaptor/pkg/paths"
 	dmidecode "github.com/fenglyu/go-dmidecode"
@@ -25,6 +26,20 @@ func isAWSVM(ctx context.Context) bool {
 }
 
 func isGCPVM(ctx context.Context) bool {
+	return isGCPVMWithProductName(ctx, "/sys/class/dmi/id/product_name")
+}
+
+func isGCPVMWithProductName(ctx context.Context, productNamePath string) bool {
+	// GCE identity does not depend on metadata being ready during cold boot.
+	// These are the SMBIOS product names recognized by Google's metadata SDK.
+	if product, err := os.ReadFile(productNamePath); err == nil {
+		switch strings.TrimSpace(string(product)) {
+		case "Google", "Google Compute Engine":
+			return true
+		}
+	}
+
+	// Retain metadata detection when SMBIOS is unavailable or unrecognized.
 	if cpuid.CPU.HypervisorVendorID != cpuid.KVM {
 		return false
 	}
