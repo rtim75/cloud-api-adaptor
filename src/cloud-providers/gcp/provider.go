@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"cloud.google.com/go/auth/credentials"
 	compute "cloud.google.com/go/compute/apiv1"
 	computepb "cloud.google.com/go/compute/apiv1/computepb"
 	crm "cloud.google.com/go/resourcemanager/apiv3"
@@ -49,9 +48,7 @@ func NewProvider(config *Config) (provider.Provider, error) {
 		instancesClient: nil,
 	}
 	if config.GcpCredentials != "" {
-		creds, err := credentials.NewCredentialsFromJSON(credentials.ServiceAccount, []byte(config.GcpCredentials), &credentials.DetectOptions{
-			Scopes: []string{computeScope},
-		})
+		creds, err := loadCredentials(config.GcpCredentials)
 		if err != nil {
 			return nil, fmt.Errorf("configuration error when using creds: %s", err)
 		}
