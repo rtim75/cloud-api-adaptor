@@ -6,6 +6,27 @@ For this repository's GCP guest image, including persistent LUKS2 headers,
 follow the [GCP guest build instructions](../podvm/README.md#gcp-guest-images).
 Both build stages require `CLOUD_PROVIDER=gcp`.
 
+## CSI data disks
+
+Use the [CSI driver installation guide](https://github.com/qlad-secure/caa-csi-block-driver/blob/7118a385a6c2e432bf1a2d48def3bd12b78093f3/README.md)
+and [regional disk configuration](https://github.com/qlad-secure/caa-csi-block-driver/blob/7118a385a6c2e432bf1a2d48def3bd12b78093f3/docs/gcp-regional.md).
+CAA and CSI must use the same GCP project. Zonal disks must match CAA's
+`GCP_ZONE`; for regional disks, that zone must be one of the two replica zones.
+CSI's advertised PodVM topology must match CAA placement, which may differ
+from the Kubernetes worker's zone.
+
+In addition to VM creation and disk attachment permissions, the CAA identity
+needs `compute.disks.get` and `compute.machineTypes.get` for disk preflight.
+These are additional prerequisites, not a complete IAM role definition.
+The guest image must resolve the exact disk identity through `/dev/disk/by-id`
+for the selected SCSI or NVMe interface. Build the GCP guest described above
+when using persistent LUKS2 disks; older detached-header disks are not migrated
+automatically.
+
+Before restarting CAA or replacing a PodVM, follow the
+[restart and uncertain-create procedure](https://github.com/qlad-secure/caa-csi-block-driver/blob/7118a385a6c2e432bf1a2d48def3bd12b78093f3/docs/gcp-regional.md#caa-restart-and-uncertain-creates).
+CAA's in-memory ownership and uncertainty state does not survive a restart.
+
 ## Credentials and Workload Identity Federation
 
 The standard `entrypoint.sh` requires `GCP_CREDENTIALS`, `GCP_PROJECT_ID`,
