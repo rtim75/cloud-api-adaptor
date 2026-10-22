@@ -172,9 +172,27 @@ func (s *proxyService) CreateContainer(ctx context.Context, req *pb.CreateContai
 			}
 
 			mountDest := ""
-			for _, m := range req.OCI.Mounts {
+			for idx, m := range req.OCI.Mounts {
 				if m.Source == decodedPath {
 					mountDest = m.Destination
+					// CSI read-only publication must not be weakened by OCI rw.
+					// Keep this container bind scoped: the guest filesystem may
+					// still serve a writable mount in another container.
+					if options, ok := mountInfo["options"].([]interface{}); ok {
+						for _, option := range options {
+							if option != "ro" {
+								continue
+							}
+							bindOptions := make([]string, 0, len(m.Options)+1)
+							for _, existing := range m.Options {
+								if existing != "rw" && existing != "ro" {
+									bindOptions = append(bindOptions, existing)
+								}
+							}
+							req.OCI.Mounts[idx].Options = append(bindOptions, "ro")
+							break
+						}
+					}
 					break
 				}
 			}
