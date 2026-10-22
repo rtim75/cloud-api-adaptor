@@ -4,6 +4,7 @@ FROM ubuntu@sha256:0d39fcc8335d6d74d5502f6df2d30119ff4790ebbb60b364818d5112d9e3e
 
 ARG MKOSI_VERSION="v26"
 ARG PROFILE="debug"
+ARG CLOUD_PROVIDER
 ARG IMAGE_VERSION="0.0.0"
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -38,6 +39,12 @@ COPY mkosi.skeleton-debug /image/mkosi.skeleton-debug
 COPY mkosi.skeleton-sftp /image/mkosi.skeleton-sftp
 COPY mkosi.workspace /image/mkosi.workspace
 COPY resources /image/resources
+# Keep GCP binaries separate in the host workspace so a later AWS/Azure build
+# cannot accidentally consume the patched CDH.
+RUN if [ "$CLOUD_PROVIDER" = "gcp" ]; then \
+    test -f resources/binaries-tree-gcp/usr/local/bin/confidential-data-hub.build-info && \
+    rm -rf resources/binaries-tree && \
+    cp -a resources/binaries-tree-gcp resources/binaries-tree; fi
 COPY mkosi.conf /image/mkosi.conf
 RUN --security=insecure mkosi --profile=$PROFILE --image-version=$IMAGE_VERSION
 

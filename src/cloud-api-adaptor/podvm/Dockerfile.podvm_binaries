@@ -104,7 +104,16 @@ WORKDIR /src/cloud-api-adaptor/podvm
 # Installs add-ons for foreign target, if required
 RUN ./hack/cross-build-extras.sh
 
-RUN LIBC=gnu make binaries
+# Only the GCP CDH storage patch is built from source. Other providers keep
+# using the pinned guest-components OCI artifacts.
+RUN if [ "$CLOUD_PROVIDER" = "gcp" ]; then \
+    apt-get update && apt-get install -y --no-install-recommends cryptsetup-bin && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl --proto '=https' --tlsv1.2 -fsSLo /tmp/rustup-init.sh https://sh.rustup.rs && \
+    sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain 1.90.0 && \
+    rm /tmp/rustup-init.sh; fi
+RUN if [ "$CLOUD_PROVIDER" = "gcp" ]; then . /root/.cargo/env; fi; \
+    LIBC=gnu make binaries
 
 FROM scratch
 COPY --from=podvm_binaries_builder /src/cloud-api-adaptor/podvm/files /
