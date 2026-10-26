@@ -2,19 +2,16 @@
 # SPDX-License-Identifier: Apache-2.0
 name: Publish attested GCP CDH
 
-# Temporary branch integration proof; publish only to the isolated test package.
+# Publish explicitly, from main only, matching the native upstream trust contract.
 # The PR build job remains unprivileged and never publishes signed artifacts.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - denys/gcp-provider
 
 permissions: {}
 
 jobs:
   publish:
-    if: github.ref == 'refs/heads/denys/gcp-provider'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -59,10 +56,10 @@ jobs:
           mkdir -p "$HOME/.docker"
           printf '%s' "$REGISTRY_TOKEN" | oras login ghcr.io --username "$REGISTRY_USER" --password-stdin
           cd "$RUNNER_TEMP/gcp-cdh"
-          image="ghcr.io/${GITHUB_REPOSITORY,,}/gcp-cdh-branch-test"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/gcp-cdh"
           oras push --format json --artifact-type application/vnd.coco.gcp-cdh.v1 \
             --annotation "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
-            "$image:branch-test-$GITHUB_SHA-amd64" confidential-data-hub:application/octet-stream \
+            "$image:$GITHUB_SHA-amd64" confidential-data-hub:application/octet-stream \
             confidential-data-hub.build-info:text/plain > "$RUNNER_TEMP/gcp-cdh-push.json"
           digest=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["digest"])' "$RUNNER_TEMP/gcp-cdh-push.json")
           [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]

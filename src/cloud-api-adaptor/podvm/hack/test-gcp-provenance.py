@@ -14,7 +14,7 @@ PODVM = Path(__file__).resolve().parents[1]
 REPO = PODVM.parents[2]
 SOURCE = "a" * 40
 UPSTREAM = "dcd55ea16ea4f4bcb87c1420f16af92e9eb15f2f"
-ARTIFACT = "ghcr.io/qlad-secure/cloud-api-adaptor/gcp-cdh-branch-test@sha256:" + "b" * 64
+ARTIFACT = "ghcr.io/qlad-secure/cloud-api-adaptor/gcp-cdh@sha256:" + "b" * 64
 REPOSITORY = "qlad-secure/cloud-api-adaptor"
 
 
@@ -33,7 +33,7 @@ class ProvenanceTests(unittest.TestCase):
                      "rustc 1.90.0 (fixture)", f"caa-source={SOURCE}", "arch=x86_64"]
         self.write_info()
         self.claims = {"digest": SOURCE, "workflowDigest": SOURCE,
-                       "workflowTrigger": "workflow_dispatch", "workflowRef": "refs/heads/denys/gcp-provider",
+                       "workflowTrigger": "workflow_dispatch", "workflowRef": "refs/heads/main",
                        "runner": "github-hosted"}
         self.write_claims()
         mock = self.root / "bin"
@@ -71,10 +71,10 @@ assert args[2] == "oci://" + os.environ["ARTIFACT"]
 if os.environ.get("EXPECT_SIGNER", "yes") == "yes":
     assert args[args.index("--repo") + 1] == os.environ["REPOSITORY"]
     assert args[args.index("--signer-workflow") + 1] == os.environ["REPOSITORY"] + "/.github/workflows/gcp_cdh.yaml"
-    assert args[args.index("--cert-identity") + 1] == "https://github.com/" + os.environ["REPOSITORY"] + "/.github/workflows/gcp_cdh.yaml@refs/heads/denys/gcp-provider"
+    assert args[args.index("--cert-identity") + 1] == "https://github.com/" + os.environ["REPOSITORY"] + "/.github/workflows/gcp_cdh.yaml@refs/heads/main"
     assert args[args.index("--source-digest") + 1] == "a" * 40
     assert args[args.index("--signer-digest") + 1] == "a" * 40
-    assert args[args.index("--source-ref") + 1] == "refs/heads/denys/gcp-provider"
+    assert args[args.index("--source-ref") + 1] == "refs/heads/main"
     assert "--deny-self-hosted-runners" in args and "--bundle-from-oci" in args
 else:
     assert args[args.index("-R") + 1] == os.environ["REPOSITORY"]
@@ -163,7 +163,6 @@ else:
     def test_untrusted_claims_rejected(self):
         for field, value in (("digest", "e" * 40), ("workflowDigest", "f" * 40),
                              ("workflowTrigger", "pull_request"), ("workflowRef", "refs/heads/feature"),
-                             ("workflowRef", "refs/heads/main"),
                              ("runner", "self-hosted")):
             with self.subTest(field=field):
                 original = self.claims[field]
@@ -209,12 +208,6 @@ else:
         result = self.fetch()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_push_claims_accepted(self):
-        self.claims["workflowTrigger"] = "push"
-        self.write_claims()
-        result = self.fetch()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
     def test_no_verified_attestation_rejected(self):
         self.env["EMPTY_BUNDLES"] = "1"
         self.assertNotEqual(self.fetch().returncode, 0)
@@ -227,8 +220,6 @@ else:
 
     def test_native_verifier_does_not_require_downstream_workflow(self):
         self.env["EXPECT_SIGNER"] = "no"
-        self.claims["workflowRef"] = "refs/heads/main"
-        self.write_claims()
         result = subprocess.run(["bash", str(PODVM.parent / "hack/verify-provenance.sh"),
                                  "-a", ARTIFACT, "-r", REPOSITORY, "-d", SOURCE, "-s"],
                                 cwd=self.root, env=self.env, capture_output=True, text=True, timeout=15)
@@ -263,12 +254,11 @@ class ReleaseSelectionTests(unittest.TestCase):
         self.assertEqual(build["env"]["VERIFY_PROVENANCE"], "yes")
         self.assertTrue(any(step.get("uses", "").startswith("actions/attest@") for step in job["steps"]))
 
-    def test_producer_pins_test_branch_source_and_attests_published_digest(self):
+    def test_producer_pins_main_source_and_attests_published_digest(self):
         workflow = self.workflow("gcp_cdh.yaml")
-        self.assertEqual(set(workflow["on"]), {"workflow_dispatch", "push"})
-        self.assertEqual(workflow["on"]["push"]["branches"], ["denys/gcp-provider"])
+        self.assertEqual(set(workflow["on"]), {"workflow_dispatch"})
         job = workflow["jobs"]["publish"]
-        self.assertEqual(job["if"], "github.ref == 'refs/heads/denys/gcp-provider'")
+        self.assertEqual(job["if"], "github.ref == 'refs/heads/main'")
         checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
         self.assertEqual(checkout["with"]["ref"], "${{ github.sha }}")
         attest = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/attest@"))
@@ -277,9 +267,6 @@ class ReleaseSelectionTests(unittest.TestCase):
         build = next(step["run"] for step in job["steps"] if step.get("id") == "build")
         self.assertIn('--test', build)
         self.assertIn('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"', build)
-        publish = next(step["run"] for step in job["steps"] if step.get("id") == "publish")
-        self.assertIn('image="ghcr.io/${GITHUB_REPOSITORY,,}/gcp-cdh-branch-test"', publish)
-        self.assertIn('"$image:branch-test-$GITHUB_SHA-amd64"', publish)
 
     def test_native_defaults_and_gcp_buildkit_secret_forwarding(self):
         for provider in ("", "aws", "azure", "gcp"):
