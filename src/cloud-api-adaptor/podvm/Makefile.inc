@@ -201,9 +201,18 @@ $(ATTESTATION_AGENT): $(FORCE_TARGET)
 	install -D --compare attestation-agent "$@"
 
 ifeq ($(CLOUD_PROVIDER),gcp)
-$(CONFIDENTIAL_DATA_HUB): always $(ROOT_DIR)podvm/hack/build-gcp-cdh.sh $(ROOT_DIR)podvm/patches/gcp-cdh-inline-header.patch
-	$(if $(filter yes,$(VERIFY_PROVENANCE)),$(error The patched GCP CDH requires downstream build provenance; upstream OCI provenance cannot cover this patch))
+# Verified releases consume the signed downstream subject; local source builds
+# keep their existing unsigned workflow without weakening other dependencies.
+GCP_CDH_ARTIFACT ?=
+GCP_CDH_REPOSITORY ?= qlad-secure/cloud-api-adaptor
+GCP_CDH_REF ?= $(shell git -C "$(ROOT_DIR)" rev-parse HEAD)
+GCP_CDH_REGISTRY_SECRET = --secret id=gcp-cdh-registry,src="$(AUTHFILE)"
+$(CONFIDENTIAL_DATA_HUB): always $(ROOT_DIR)podvm/hack/build-gcp-cdh.sh $(ROOT_DIR)podvm/hack/fetch-gcp-cdh.sh $(ROOT_DIR)podvm/patches/gcp-cdh-inline-header.patch
+ifeq ($(VERIFY_PROVENANCE),yes)
+	$(ROOT_DIR)podvm/hack/fetch-gcp-cdh.sh "$(GCP_CDH_ARTIFACT)" "$(GCP_CDH_REPOSITORY)" "$(GCP_CDH_REF)" "$(GUEST_COMPONENTS_REF)" "$(ARCH)" "$@"
+else
 	$(ROOT_DIR)podvm/hack/build-gcp-cdh.sh "$(GUEST_COMPONENTS_REF)" "$(ARCH)" "$@"
+endif
 else
 # A direct native build may reuse files/ after a GCP build. Restore the
 # upstream artifact before building another provider, even without FORCE.

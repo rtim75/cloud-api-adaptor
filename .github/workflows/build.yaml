@@ -79,7 +79,9 @@ jobs:
           sudo apt-get install -y libvirt-dev
       - name: Test PodVM image tree selection
         if: matrix.type == 'dev'
-        run: python3 podvm/hack/test-gcp-image.py
+        run: |
+          python3 podvm/hack/test-gcp-image.py
+          python3 podvm/hack/test-gcp-provenance.py
       - name: Build
         env:
           BUILD_TYPE: ${{ matrix.type }}

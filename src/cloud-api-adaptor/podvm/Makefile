@@ -66,6 +66,8 @@ endif
 		-t $(PODVM_BINARIES_IMAGE) \
 		--progress=plain \
 		$(if $(filter gcp,$(CLOUD_PROVIDER)),--build-arg CLOUD_PROVIDER=gcp,) \
+		$(if $(filter gcp,$(CLOUD_PROVIDER)),--build-arg GCP_CDH_ARTIFACT="$(GCP_CDH_ARTIFACT)" --build-arg GCP_CDH_REPOSITORY="$(GCP_CDH_REPOSITORY)" --build-arg GCP_CDH_REF="$(GCP_CDH_REF)",) \
+		$(if $(and $(filter gcp,$(CLOUD_PROVIDER)),$(AUTHFILE)),$(GCP_CDH_REGISTRY_SECRET),) \
 		--build-arg GO_VERSION=$(GO_VERSION) \
 		--build-arg ARCH=$(ARCH) \
 		--build-arg GO_ARCH=$(GO_ARCH) \

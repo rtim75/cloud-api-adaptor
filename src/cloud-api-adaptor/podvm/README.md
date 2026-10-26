@@ -70,10 +70,59 @@ with:
 sha256sum resources/binaries-tree-gcp/usr/local/bin/confidential-data-hub
 ```
 
-The build-info file is unsigned. `VERIFY_PROVENANCE=yes` rejects the GCP build
-because upstream OCI attestations do not cover the patch. If signed provenance
-is required, provide it through your own build/signing process. The build script
-rejects guest-components revisions for which the patch has not been reviewed.
+Local source builds use `VERIFY_PROVENANCE=no`, like the native build default.
+Their build-info file is unsigned. The build script rejects guest-components
+revisions for which the patch has not been reviewed.
+
+For a verified GCP release, use the downstream CDH artifact rather than applying
+upstream provenance to a modified binary:
+
+1. On the reviewed `main` commit, explicitly run the **Publish attested GCP CDH**
+   workflow (`.github/workflows/gcp_cdh.yaml`). It builds and tests x86_64 CDH,
+   publishes the binary and build-info as one GHCR OCI artifact, and attests its
+   digest with the same `actions/attest` mechanism used for native image releases.
+   The workflow does not accept an arbitrary source checkout or run on PRs.
+2. Save the immutable `GCP_CDH_ARTIFACT` reference and `GCP_CDH_REF` commit from
+   its summary. Use that same CAA source commit for the consuming image build.
+3. Run **Create Pod VM image with mkosi** with `cloud-provider=gcp`,
+   `gcp-cdh-artifact=<the OCI reference including @sha256 digest>`, `arch=amd64`,
+   the matching `git_ref`, and the appropriate `tee-platform`. This keeps
+   `VERIFY_PROVENANCE=yes`, selects the GCP image tree and `-gcp` publication
+   name, and attests the final image digest through the existing release step.
+   **Publish pod VM Images** also accepts these GCP inputs; its native defaults
+   and native architecture matrix are retained.
+
+For a local verified build, check out the same source commit and run:
+
+```sh
+make CLOUD_PROVIDER=gcp TEE_PLATFORM=tdx VERIFY_PROVENANCE=yes \
+  GCP_CDH_ARTIFACT='<registry/path@sha256:64-hex-digest>' \
+  GCP_CDH_REF='<40-character-CAA-source-commit>' \
+  GCP_CDH_REPOSITORY=qlad-secure/cloud-api-adaptor \
+  podvm-binaries
+make CLOUD_PROVIDER=gcp TEE_PLATFORM=tdx image
+```
+
+`GCP_CDH_REF` defaults to the current checkout commit. The repository defaults to
+`qlad-secure/cloud-api-adaptor`; the release workflow trusts its own repository.
+For private GHCR artifacts, log in to GHCR and pass `AUTHFILE` pointing to the
+Docker-compatible registry config. GCP passes this file as a BuildKit secret;
+its contents are not copied into build layers. The workflow configures this
+credential mount automatically.
+
+The consumer verifies the signed OCI subject, exact producer workflow, CAA
+source/workflow commit, `main` ref and hosted runner. It also checks the signed
+build-info against the requested guest-components revision, current patch,
+architecture, features, Rust version and binary hash before installation.
+Missing/invalid provenance or mismatched inputs fail the build, including when
+an older CDH binary already exists; there is no fallback to an unsigned build.
+Other guest dependencies retain their existing upstream verification. The
+initial downstream producer supports x86_64; it does not introduce signed
+cross-compilation or change the native AWS/Azure verifier.
+
+The GCP producer is dispatched explicitly; select GCP explicitly in the image
+publication workflow too. Existing native release callers keep their defaults.
+The repository must allow GHCR package publication and GitHub artifact attestations.
 
 This image supports newly initialized disks and existing inline LUKS2 disks.
 Disks with detached headers require separate migration. Preserve their headers
