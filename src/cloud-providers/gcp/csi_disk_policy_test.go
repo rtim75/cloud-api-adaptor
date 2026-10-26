@@ -4,6 +4,7 @@
 package gcp
 
 import (
+	"fmt"
 	"testing"
 
 	"cloud.google.com/go/compute/apiv1/computepb"
@@ -134,5 +135,33 @@ func TestCSIBootDiskTypes(t *testing.T) {
 		if err := testDiskBudget("c4d-standard-64", "").add(kind, 2048, 0, 0, true); err == nil {
 			t.Fatalf("unsupported %s boot disk accepted", kind)
 		}
+	}
+}
+
+func TestHyperdiskBalancedThroughputRounding(t *testing.T) {
+	for _, tc := range []struct {
+		size, iops, throughput int64
+		valid                  bool
+	}{
+		{80, 40000, 155, false}, {80, 40000, 156, true}, {80, 40000, 157, true},
+		{300, 150000, 584, false}, {300, 150000, 585, true}, {300, 150000, 586, true},
+		{128, 64000, 249, false}, {128, 64000, 250, true},
+		{320, 160000, 624, false}, {320, 160000, 625, true},
+		{79, 40000, 156, false}, {299, 150000, 585, false},
+		{80, 40000, 0, true}, {80, 0, 156, true}, {80, 0, 0, true},
+		{80, 40000, 139, false}, {80, 40000, 2400, true}, {80, 40000, 2401, false},
+		{10, 5000, 1250, true}, {10, 5000, 1251, false},
+	} {
+		t.Run(fmt.Sprintf("%d-%d-%d", tc.size, tc.iops, tc.throughput), func(t *testing.T) {
+			if err := diskPerformance("hyperdisk-balanced", tc.size, tc.iops, tc.throughput); (err == nil) != tc.valid {
+				t.Fatalf("performance: valid=%v err=%v", tc.valid, err)
+			}
+			if err := testDiskBudget("c4d-standard-64", "").add("hyperdisk-balanced", tc.size, tc.iops, tc.throughput, false); (err == nil) != tc.valid {
+				t.Fatalf("budget: valid=%v err=%v", tc.valid, err)
+			}
+		})
+	}
+	if err := diskPerformance("hyperdisk-balanced-high-availability", 200, 100000, 140); err != nil {
+		t.Fatalf("HA lower ratio is delegated to Compute Engine: %v", err)
 	}
 }

@@ -86,6 +86,10 @@ func TestCreateInstanceValidatesVolumesBeforeCloudCalls(t *testing.T) {
 // Exercise real SDK request/response handling and the production preflight →
 // Insert boundary. The server is local and no cloud credentials are needed.
 func TestInsertInstancePreflight(t *testing.T) {
+	balanced := map[string]struct{ size, iops, throughput int64 }{
+		"hb-40000-floor": {80, 40000, 156}, "hb-40000-ceil": {80, 40000, 157}, "hb-40000-below": {80, 40000, 155},
+		"hb-150000-floor": {300, 150000, 585}, "hb-150000-ceil": {300, 150000, 586}, "hb-150000-below": {300, 150000, 584},
+	}
 	for _, tc := range []struct {
 		name   string
 		want   string
@@ -99,8 +103,11 @@ func TestInsertInstancePreflight(t *testing.T) {
 		{"boot-limit", "boot disk exceeds", false}, {"unknown-limits", "usable Persistent Disk limits", false},
 		{"machine-forbidden", "reading machine type", false},
 		{"insert-race", "attached after preflight", true}, {"cancelled", "context canceled", false},
+		{"hb-40000-floor", "", true}, {"hb-40000-ceil", "", true}, {"hb-40000-below", "invalid provisioned performance", false},
+		{"hb-150000-floor", "", true}, {"hb-150000-ceil", "", true}, {"hb-150000-below", "invalid provisioned performance", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			performance, hb := balanced[tc.name]
 			var gets, inserts atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
@@ -164,7 +171,11 @@ func TestInsertInstancePreflight(t *testing.T) {
 					if tc.name == "unknown-limits" {
 						limit = 0
 					}
-					_ = json.NewEncoder(w).Encode(map[string]any{"guestCpus": 4, "maximumPersistentDisks": limit, "maximumPersistentDisksSizeGb": fmt.Sprint(size)})
+					cpus := 4
+					if hb {
+						cpus = 64
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"guestCpus": cpus, "maximumPersistentDisks": limit, "maximumPersistentDisksSizeGb": fmt.Sprint(size)})
 					return
 				}
 				if !strings.HasPrefix(r.URL.Path, "/compute/v1/projects/test-project/zones/us-central1-a/disks/") {
@@ -197,6 +208,12 @@ func TestInsertInstancePreflight(t *testing.T) {
 				case "invalid-size":
 					disk["sizeGb"] = "0"
 				}
+				if hb {
+					disk["type"] = "zones/us-central1-a/diskTypes/hyperdisk-balanced"
+					disk["sizeGb"] = fmt.Sprint(performance.size)
+					disk["provisionedIops"] = fmt.Sprint(performance.iops)
+					disk["provisionedThroughput"] = fmt.Sprint(performance.throughput)
+				}
 				_ = json.NewEncoder(w).Encode(disk)
 			}))
 			defer server.Close()
@@ -217,9 +234,12 @@ func TestInsertInstancePreflight(t *testing.T) {
 			}
 			boot := &computepb.AttachedDisk{Boot: proto.Bool(true), InitializeParams: &computepb.AttachedDiskInitializeParams{DiskSizeGb: proto.Int64(20)}}
 			req := &computepb.InsertInstanceRequest{Project: "test-project", Zone: "us-central1-a", InstanceResource: &computepb.Instance{MachineType: proto.String("zones/us-central1-a/machineTypes/n2d-standard-2"), Disks: append([]*computepb.AttachedDisk{boot}, data...)}}
-			if tc.name == "hyperdisk" {
+			if tc.name == "hyperdisk" || hb {
 				req.InstanceResource.MachineType = proto.String("zones/us-central1-a/machineTypes/c4d-standard-4")
 				boot.InitializeParams.DiskType = proto.String("zones/us-central1-a/diskTypes/hyperdisk-balanced")
+			}
+			if hb {
+				req.InstanceResource.MachineType = proto.String("zones/us-central1-a/machineTypes/c4d-standard-64")
 			}
 			if tc.name == "tdx-ssd" {
 				req.InstanceResource.ConfidentialInstanceConfig = &computepb.ConfidentialInstanceConfig{EnableConfidentialCompute: proto.Bool(true), ConfidentialInstanceType: proto.String("TDX")}

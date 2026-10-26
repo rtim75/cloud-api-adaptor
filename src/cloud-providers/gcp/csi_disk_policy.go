@@ -141,7 +141,8 @@ func diskPerformance(kind string, size, i, t int64) error {
 		if size < 6 {
 			lo, hi = 500*size, 500*size
 		}
-		invalid = (i != 0 && (i < lo || i > hi)) || (t != 0 && (t < 140 || t > 2400 || 4*t > hi || (i != 0 && (4*t > i || (!ha && i > 256*t)))))
+		// Compute Engine floors the zonal HB minimum throughput to whole MiB/s.
+		invalid = (i != 0 && (i < lo || i > hi)) || (t != 0 && (t < 140 || t > 2400 || 4*t > hi || (i != 0 && (4*t > i || (!ha && t < i/256)))))
 	case "hyperdisk-extreme":
 		invalid = t != 0 || (i != 0 && (i < 2*size || i > min(1200*size, 350000)))
 	case "hyperdisk-throughput":
