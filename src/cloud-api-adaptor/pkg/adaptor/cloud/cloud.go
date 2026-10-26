@@ -272,7 +272,7 @@ func (s *cloudService) CreateVM(ctx context.Context, req *pb.CreateVMRequest) (r
 
 	// Store apf.json in worker node for debugging
 	apfJSONPath := filepath.Join(podDir, "apf.json")
-	if err := os.WriteFile(apfJSONPath, apfJSON, 0o666); err != nil {
+	if err := writeAPFConfig(apfJSONPath, apfJSON); err != nil {
 		return nil, fmt.Errorf("storing %s: %w", apfJSONPath, err)
 	}
 	logger.Printf("stored %s", apfJSONPath)
