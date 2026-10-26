@@ -30,13 +30,13 @@ cd "$work_dir"
 # (for example after a producer rerun); never select an arbitrary first bundle.
 gh attestation verify "oci://$artifact" --repo "$repository" --bundle-from-oci \
     --signer-workflow "$repository/.github/workflows/gcp_cdh.yaml" \
-    --cert-identity "https://github.com/$repository/.github/workflows/gcp_cdh.yaml@refs/heads/main" \
+    --cert-identity "https://github.com/$repository/.github/workflows/gcp_cdh.yaml@refs/heads/denys/gcp-provider" \
     --source-digest "$source_ref" --signer-digest "$source_ref" \
-    --source-ref refs/heads/main --deny-self-hosted-runners --format json > verified.json
+    --source-ref refs/heads/denys/gcp-provider --deny-self-hosted-runners --format json > verified.json
 jq -e --arg ref "$source_ref" '
     length > 0 and all(.[]; .verificationResult.signature.certificate |
         .sourceRepositoryDigest == $ref and .githubWorkflowSHA == $ref and
-        .githubWorkflowRef == "refs/heads/main" and .runnerEnvironment == "github-hosted" and
+        .githubWorkflowRef == "refs/heads/denys/gcp-provider" and .runnerEnvironment == "github-hosted" and
         (.githubWorkflowTrigger == "push" or .githubWorkflowTrigger == "workflow_dispatch"))
 ' verified.json > /dev/null
 oras pull "$artifact" --output "$work_dir/payload"
