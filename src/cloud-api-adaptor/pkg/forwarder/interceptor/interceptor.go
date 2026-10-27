@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -432,13 +433,17 @@ func findDataDiskDevice(lunIdx int, diskID string) (string, error) {
 	return findDataDiskDeviceWithGCP(lunIdx, diskID, findGCPDataDisk)
 }
 
+var azureDiskResourceID = regexp.MustCompile(`(?i)^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Compute/disks/[^/]+$`)
+
 // findDataDiskDeviceWithGCP retries provider-specific discovery with an injectable
 // GCP lookup. GCP identities require exact matches and never use LUN fallback.
 func findDataDiskDeviceWithGCP(lunIdx int, diskID string, gcpLookup func(string) (string, error)) (string, error) {
 	provider := "gcp"
 	// Classify from the resource identity before device probing: the GCP disk
 	// may not have appeared yet. Invalid GCP-looking IDs must not use LUN fallback.
-	if !strings.Contains(diskID, "projects/") {
+	// Azure resource groups may end in "projects"; their ARM disk IDs must
+	// retain platform discovery rather than enter GCP identity validation.
+	if azureDiskResourceID.MatchString(diskID) || !strings.Contains(diskID, "projects/") {
 		provider = detectCloudProvider()
 	} else if gcpDiskParts(diskID) == nil {
 		return "", fmt.Errorf("invalid GCP disk path %q", diskID)
