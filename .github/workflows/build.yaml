@@ -16,6 +16,32 @@ concurrency:
 permissions: {}
 
 jobs:
+  gcp-cdh:
+    name: GCP CDH build and persistent header regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    container:
+      image: rust:1.90.0-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f
+    defaults:
+      run:
+        shell: bash
+        working-directory: src/cloud-api-adaptor
+    steps:
+      - name: Checkout the pull request code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install GCP CDH build and test dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends cryptsetup-bin protobuf-compiler libclang-dev libssl-dev pkg-config python3-yaml
+      - name: Build patched CDH and test persistent LUKS headers
+        run: |
+          guest_components_ref=$(python3 -c 'import yaml; print(yaml.safe_load(open("versions.yaml"))["oci"]["guest-components"]["reference"])')
+          podvm/hack/build-gcp-cdh.sh "$guest_components_ref" x86_64 "$RUNNER_TEMP/gcp-cdh/confidential-data-hub" --test
+
   caa:
     name: cloud-api-adaptor
     runs-on: ${{ matrix.runner }}
@@ -51,6 +77,11 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y libvirt-dev
+      - name: Test PodVM image tree selection
+        if: matrix.type == 'dev'
+        run: |
+          python3 podvm/hack/test-gcp-image.py
+          python3 podvm/hack/test-gcp-provenance.py
       - name: Build
         env:
           BUILD_TYPE: ${{ matrix.type }}

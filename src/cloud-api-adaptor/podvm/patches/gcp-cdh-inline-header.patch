@@ -1,0 +1,116 @@
+diff --git a/confidential-data-hub/hub/src/storage/drivers/luks2.rs b/confidential-data-hub/hub/src/storage/drivers/luks2.rs
+index 0fd14705..b84678a5 100644
+--- a/confidential-data-hub/hub/src/storage/drivers/luks2.rs
++++ b/confidential-data-hub/hub/src/storage/drivers/luks2.rs
+@@ -102,6 +102,23 @@ impl Luks2Formatter {
+         self
+     }
+ 
++    /// GCP persistent disks carry their header with their ciphertext, including
++    /// across PodVM recreation, snapshots and clones. Existing devices must not
++    /// be reformatted when reopening them.
++    fn prepare_persistent_device(
++        &self,
++        device_path: &str,
++        key: Zeroizing<Vec<u8>>,
++        source_type: &SourceType,
++    ) -> Result<()> {
++        if source_type == &SourceType::Empty {
++            warn!("encrypting the device. This will wipe original data on the disk.");
++            self.encrypt_device(device_path, None, key)
++                .context("Failed to encrypt LUKS2 device")?;
++        }
++        Ok(())
++    }
++
+     /// Encrypt (format) a block device as LUKS2 using the `cryptsetup` binary.
+     pub fn encrypt_device(
+         &self,
+@@ -208,7 +225,7 @@ pub struct Luks2MountParameters {
+ 
+ impl Luks2MountParameters {
+     /// Do the mount operation for the LUKS2 device.
+-    /// Returns the header path if the source type is empty.
++    /// The GCP build stores the header inline, so no detached path is returned.
+     pub async fn do_mount(
+         self,
+         device_path: &str,
+@@ -218,18 +235,8 @@ impl Luks2MountParameters {
+     ) -> Result<Option<String>> {
+         let data_integrity = self.data_integrity.map(|s| s == "true").unwrap_or(false);
+         let formatter = Luks2Formatter::default().with_integrity(data_integrity);
+-        // 3.1 if the source type is empty, encrypt the device and create detached header
+-        let header_path = if source_type == SourceType::Empty {
+-            warn!("encrypting the device. This will wipe original data on the disk.");
+-            let header_path = luks_header_path(device_path);
+-            prepare_luks_header_file(&header_path)?;
+-            formatter
+-                .encrypt_device(device_path, Some(&header_path), key.clone())
+-                .context("Failed to encrypt LUKS2 device")?;
+-            Some(header_path)
+-        } else {
+-            None
+-        };
++        formatter.prepare_persistent_device(device_path, key.clone(), &source_type)?;
++        let header_path: Option<String> = None;
+ 
+         let devmapper_name = self.mapper_name.unwrap_or_else(|| {
+             debug!("No mapper name provided, generating a random one");
+@@ -558,3 +565,57 @@ mod tests {
+             .unwrap();
+     }
+ }
++
++#[cfg(test)]
++mod gcp_persistent_header_tests {
++    use super::*;
++    use std::io::Read;
++
++    #[test]
++    fn gcp_inline_header_reopens_and_copies_without_guest_state() {
++        let data = tempfile::NamedTempFile::new().unwrap();
++        data.as_file().set_len(64 * 1024 * 1024).unwrap();
++        let path = data.path().to_str().unwrap();
++        let mut key = Zeroizing::new(vec![0u8; 32]);
++        std::fs::File::open("/dev/urandom")
++            .unwrap()
++            .read_exact(&mut key)
++            .unwrap();
++        let formatter = Luks2Formatter::default();
++        formatter
++            .prepare_persistent_device(path, key.clone(), &SourceType::Empty)
++            .unwrap();
++        run_cryptsetup(&["isLuks", path]).unwrap();
++        let before = std::fs::read(path).unwrap();
++        assert_eq!(&before[..6], b"LUKS\xba\xbe");
++        formatter
++            .prepare_persistent_device(path, key.clone(), &SourceType::Encrypted)
++            .unwrap();
++        run_cryptsetup_stdin(
++            &["open", "--test-passphrase", "--key-file", "-", path],
++            &key,
++        )
++        .unwrap();
++        let wrong_key = Zeroizing::new(vec![0u8; 32]);
++        assert!(run_cryptsetup_stdin(
++            &["open", "--test-passphrase", "--key-file", "-", path],
++            &wrong_key
++        )
++        .is_err());
++        assert_eq!(before, std::fs::read(path).unwrap());
++        let copy = tempfile::NamedTempFile::new().unwrap();
++        std::fs::copy(path, copy.path()).unwrap();
++        run_cryptsetup_stdin(
++            &[
++                "open",
++                "--test-passphrase",
++                "--key-file",
++                "-",
++                copy.path().to_str().unwrap(),
++            ],
++            &key,
++        )
++        .unwrap();
++        assert_eq!(before, std::fs::read(copy.path()).unwrap());
++    }
++}

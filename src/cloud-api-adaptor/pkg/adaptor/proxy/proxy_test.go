@@ -148,35 +148,36 @@ func TestDialerSuccess(t *testing.T) {
 
 		require.NoError(t, listener.Close(), "expect no error closing listener")
 
-		listenerErrCh := make(chan error)
+		type listenResult struct {
+			listener net.Listener
+			err      error
+		}
+		listenerCh := make(chan listenResult, 1)
 		go func() {
-			defer close(listenerErrCh)
-
 			time.Sleep(testTimeout250)
 
-			var err error
 			// Open the same port
-			listener, err = net.Listen(testNetworkTCP, address)
-			if err != nil {
-				listenerErrCh <- err
-			}
+			listener, err := net.Listen(testNetworkTCP, address)
+			listenerCh <- listenResult{listener: listener, err: err}
 		}()
 
 		conn, err := p.dial(context.Background(), address)
-		if err == nil {
-			listener.Close()
-			break
+		// Dial must race the delayed startup to exercise retry. Receiving the
+		// result publishes listener state before cleanup; dial success does not.
+		result := <-listenerCh
+		if conn != nil {
+			assert.NoError(t, conn.Close(), "expect no error closing connection")
 		}
-		defer conn.Close()
 
-		if e := <-listenerErrCh; e != nil {
+		if result.err != nil {
 			// A rare case occurs. Retry the test.
-			t.Logf("%v", e)
+			t.Logf("%v", result.err)
 			continue
 		}
 
-		listener.Close()
-		assert.NoError(t, err, "expect no error dialing")
+		require.NoError(t, result.listener.Close(), "expect no error closing listener")
+		require.NoError(t, err, "expect no error dialing")
+		require.NotNil(t, conn, "expect a connection after successful dial")
 		break
 	}
 }

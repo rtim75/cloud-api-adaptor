@@ -1090,8 +1090,9 @@ func TestCloudVolumesJSONParseError(t *testing.T) {
 	t.Run("valid cloud_volumes without device does not panic", func(t *testing.T) {
 		mock := &mockRedirector{}
 		i := &interceptor{
-			Redirector: mock,
-			nsPath:     "/run/netns/podns",
+			Redirector:   mock,
+			nsPath:       "/run/netns/podns",
+			findDataDisk: func(int, string) (string, error) { return "", os.ErrNotExist },
 		}
 
 		req := &pb.CreateContainerRequest{

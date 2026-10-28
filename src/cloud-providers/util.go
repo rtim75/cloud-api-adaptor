@@ -202,10 +202,11 @@ func NewFlagRegistrar(flags *flag.FlagSet) *FlagRegistrar {
 }
 
 // StringWithEnv registers a string flag with environment variable support.
-// Optional FlagOption parameters (Required(), Secret()) are metadata-only (used by config-extractor).
+// Required is metadata-only (used by config-extractor). Secret hides the default
+// from usage without changing the configured value.
 // Usage: reg.StringWithEnv(&field, "flag", "", "ENV", "desc", Required(), Secret())
 func (r *FlagRegistrar) StringWithEnv(field *string, flagName, hardcodedDefault, envVarName, usage string, opts ...FlagOption) {
-	_ = applyOptions(opts) // metadata-only, used by config-extractor
+	options := applyOptions(opts)
 
 	*field = hardcodedDefault
 
@@ -216,6 +217,9 @@ func (r *FlagRegistrar) StringWithEnv(field *string, flagName, hardcodedDefault,
 	}
 
 	r.flags.StringVar(field, flagName, *field, usage)
+	if options.secret {
+		r.flags.Lookup(flagName).DefValue = ""
+	}
 }
 
 // IntWithEnv registers an int flag with environment variable support.

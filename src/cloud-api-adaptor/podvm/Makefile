@@ -9,8 +9,8 @@ ifeq ($(PODVM_TAG),)
 	PODVM_TAG := $(VERSIONS_HASH)
 endif
 PODVM_BUILDER_IMAGE ?= $(REGISTRY)/podvm-builder-ubuntu-$(DISTRO_ARCH):$(PODVM_TAG)
-PODVM_BINARIES_IMAGE ?= $(REGISTRY)/podvm-binaries-ubuntu-$(DISTRO_ARCH):$(PODVM_TAG)
-PODVM_IMAGE ?= $(REGISTRY)/podvm-generic-ubuntu$(if $(filter $(SE_BOOT),true),-se,)-$(DISTRO_ARCH):$(PODVM_TAG)
+PODVM_BINARIES_IMAGE ?= $(REGISTRY)/podvm-binaries-ubuntu-$(DISTRO_ARCH)$(if $(filter gcp,$(CLOUD_PROVIDER)),-gcp,):$(PODVM_TAG)
+PODVM_IMAGE ?= $(REGISTRY)/podvm-generic-ubuntu$(if $(filter $(SE_BOOT),true),-se,)-$(DISTRO_ARCH)$(if $(filter gcp,$(CLOUD_PROVIDER)),-gcp,):$(PODVM_TAG)
 PODVM_CONTAINER_NAME ?= $(REGISTRY)/podvm-docker-image-$(DISTRO_ARCH)
 PODVM_BYOM_BINARIES_IMAGE ?= $(REGISTRY)/podvm-byom-binaries-ubuntu-$(DISTRO_ARCH)
 PODVM_BYOM_E2E_CONTAINER_NAME ?= $(REGISTRY)/podvm-byom-e2e-image-$(DISTRO_ARCH)
@@ -58,13 +58,16 @@ endef
 .PHONY: podvm-binaries
 podvm-binaries:
 	@echo "Building podvm binaries using Docker..."
-	rm -rf ./resources/binaries-tree
+	rm -rf ./resources/binaries-tree$(if $(filter gcp,$(CLOUD_PROVIDER)),-gcp,)
 ifeq ($(IS_DEBIAN),true)
 	docker buildx use default
 endif
 	docker buildx build \
 		-t $(PODVM_BINARIES_IMAGE) \
 		--progress=plain \
+		$(if $(filter gcp,$(CLOUD_PROVIDER)),--build-arg CLOUD_PROVIDER=gcp,) \
+		$(if $(filter gcp,$(CLOUD_PROVIDER)),--build-arg GCP_CDH_ARTIFACT="$(GCP_CDH_ARTIFACT)" --build-arg GCP_CDH_REPOSITORY="$(GCP_CDH_REPOSITORY)" --build-arg GCP_CDH_REF="$(GCP_CDH_REF)",) \
+		$(if $(and $(filter gcp,$(CLOUD_PROVIDER)),$(AUTHFILE)),$(GCP_CDH_REGISTRY_SECRET),) \
 		--build-arg GO_VERSION=$(GO_VERSION) \
 		--build-arg ARCH=$(ARCH) \
 		--build-arg GO_ARCH=$(GO_ARCH) \
@@ -83,7 +86,7 @@ endif
 		--build-arg VERIFY_PROVENANCE=$(VERIFY_PROVENANCE) \
 		$(if $(AUTHFILE),--build-arg AUTHFILE=$(AUTHFILE),) \
 		$(if $(DEFAULT_AGENT_POLICY_FILE),--build-arg DEFAULT_AGENT_POLICY_FILE=$(DEFAULT_AGENT_POLICY_FILE),) \
-		$(if $(filter $(EXPORT_BINARIES),false),,-o type=local,dest="./resources/binaries-tree") \
+		$(if $(filter $(EXPORT_BINARIES),false),,-o type=local,dest="./resources/binaries-tree$(if $(filter gcp,$(CLOUD_PROVIDER)),-gcp,)") \
 		$(DOCKER_OPTS) \
 		-f Dockerfile.podvm_binaries ../../
 
@@ -110,6 +113,7 @@ else
 		-f Dockerfile.mkosi \
 		-t $(PODVM_IMAGE) \
 		--build-arg PROFILE=production \
+		$(if $(filter gcp,$(CLOUD_PROVIDER)),--build-arg CLOUD_PROVIDER=gcp,) \
 		--build-arg IMAGE_VERSION \
 		--build-arg MKOSI_VERSION \
 		--progress=plain \
@@ -137,6 +141,7 @@ else
 		-f Dockerfile.mkosi \
 		-t $(PODVM_IMAGE) \
 		--build-arg PROFILE=debug \
+		$(if $(filter gcp,$(CLOUD_PROVIDER)),--build-arg CLOUD_PROVIDER=gcp,) \
 		--build-arg IMAGE_VERSION \
 		--build-arg MKOSI_VERSION \
 		--progress=plain \
@@ -163,6 +168,7 @@ else
 		-f Dockerfile.mkosi \
 		-t $(PODVM_IMAGE) \
 		--build-arg PROFILE=sftp \
+		$(if $(filter gcp,$(CLOUD_PROVIDER)),--build-arg CLOUD_PROVIDER=gcp,) \
 		--build-arg IMAGE_VERSION \
 		--build-arg MKOSI_VERSION \
 		--progress=plain \

@@ -80,6 +80,9 @@ ARG PAUSE_VERSION
 ARG PAUSE_BIN
 ARG IMAGE_NAME
 ARG VERIFY_PROVENANCE
+ARG GCP_CDH_ARTIFACT
+ARG GCP_CDH_REPOSITORY=qlad-secure/cloud-api-adaptor
+ARG GCP_CDH_REF
 
 ENV AUTHFILE=${AUTHFILE}
 ENV PAUSE_REPO=${PAUSE_REPO}
@@ -93,6 +96,9 @@ ENV ARCH=${ARCH}
 ENV DEFAULT_AGENT_POLICY_FILE=${DEFAULT_AGENT_POLICY_FILE}
 ENV IMAGE_NAME=${IMAGE_NAME}
 ENV VERIFY_PROVENANCE=${VERIFY_PROVENANCE}
+ENV GCP_CDH_ARTIFACT=${GCP_CDH_ARTIFACT}
+ENV GCP_CDH_REPOSITORY=${GCP_CDH_REPOSITORY}
+ENV GCP_CDH_REF=${GCP_CDH_REF}
 
 # Set these as they are required in the Makefile
 ENV IMAGE_URL="none"
@@ -104,7 +110,22 @@ WORKDIR /src/cloud-api-adaptor/podvm
 # Installs add-ons for foreign target, if required
 RUN ./hack/cross-build-extras.sh
 
-RUN LIBC=gnu make binaries
+# Local GCP builds compile the storage patch; verified release builds consume
+# its attested downstream artifact. Other providers retain upstream artifacts.
+RUN if [ "$CLOUD_PROVIDER" = "gcp" ] && [ "$VERIFY_PROVENANCE" != "yes" ]; then \
+    apt-get update && apt-get install -y --no-install-recommends cryptsetup-bin && \
+    rm -rf /var/lib/apt/lists/* && \
+    curl --proto '=https' --tlsv1.2 -fsSLo /tmp/rustup-init.sh https://sh.rustup.rs && \
+    sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain 1.90.0 && \
+    rm /tmp/rustup-init.sh; fi
+# Registry credentials are available only to this RUN, never copied into a layer.
+# Skopeo's AUTHFILE must also name the mounted file rather than its host path.
+RUN --mount=type=secret,id=gcp-cdh-registry,target=/root/.docker/config.json \
+    if [ "$CLOUD_PROVIDER" = "gcp" ] && [ "$VERIFY_PROVENANCE" != "yes" ]; then . /root/.cargo/env; fi; \
+    if [ "$CLOUD_PROVIDER" = "gcp" ] && [ -f /root/.docker/config.json ]; then \
+        export AUTHFILE=/root/.docker/config.json; \
+    fi; \
+    LIBC=gnu make binaries
 
 FROM scratch
 COPY --from=podvm_binaries_builder /src/cloud-api-adaptor/podvm/files /

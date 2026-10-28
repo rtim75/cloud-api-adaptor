@@ -456,3 +456,36 @@ func TestCloudVolumes_NoEncryptionParamsWhenAbsent(t *testing.T) {
 	assert.Equal(t, "", vol.EncryptType)
 	assert.Equal(t, "", vol.KeyID)
 }
+
+// Exercise both attachment collection and the guest annotation from the same
+// GCP mountInfo files, independent of container mount order.
+func TestGCPVolumeIdentityThroughAttachmentAndProxy(t *testing.T) {
+	dir := t.TempDir()
+	overrideKataDirectVolumesDir(t, dir)
+	service, cleanup := setupMockAgentAndService(t)
+	defer cleanup()
+	const pod = "gcp-pod"
+	ids := []string{"projects/test-project/regions/us-central1/disks/csi-two", "projects/test-project/zones/us-central1-a/disks/csi-one"}
+	var mounts []*pb.Mount
+	for i, id := range ids {
+		volPath := "/var/lib/kubelet/pods/" + pod + "/volumes/kubernetes.io~csi/" + filepath.Base(id) + "/mount"
+		writeTestMountInfo(t, dir, volPath, map[string]interface{}{"device": id, "fstype": "ext4", "metadata": map[string]interface{}{"cloud-provider": "gcp", "cloud-volume-path": id}})
+		mounts = append(mounts, &pb.Mount{Source: volPath, Destination: []string{"/two", "/one"}[i], Type: "bind"})
+	}
+	annotations := map[string]string{"io.kubernetes.cri.sandbox-uid": pod}
+	attached := util.GetCSIVolumesForPod(annotations)
+	require.Len(t, attached, 2)
+	assert.ElementsMatch(t, ids, []string{attached[0].DiskID, attached[1].DiskID})
+	req := newCreateContainerRequest("gcp-container").withAnnotations(annotations).withMounts(mounts...).build()
+	_, err := service.CreateContainer(context.Background(), req)
+	require.NoError(t, err)
+	var volumes map[string]util.CloudVolumeAnnotation
+	require.NoError(t, json.Unmarshal([]byte(req.OCI.Annotations[util.CloudVolumesAnnotationKey]), &volumes))
+	require.Len(t, volumes, 2)
+	byMount := map[string]string{}
+	for _, vol := range volumes {
+		byMount[vol.MountPoint] = vol.DiskID
+		assert.Equal(t, "ext4", vol.FSType)
+	}
+	assert.Equal(t, map[string]string{"/two": ids[0], "/one": ids[1]}, byMount)
+}

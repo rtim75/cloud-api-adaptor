@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
+	"regexp"
 	"strings"
+	"sync"
+	"time"
 
-	"cloud.google.com/go/auth/credentials"
 	compute "cloud.google.com/go/compute/apiv1"
 	computepb "cloud.google.com/go/compute/apiv1/computepb"
 	crm "cloud.google.com/go/resourcemanager/apiv3"
@@ -31,6 +33,8 @@ const maxInstanceNameLen = 63
 type gcpProvider struct {
 	serviceConfig   *Config
 	instancesClient *compute.InstancesClient
+	clientOptions   []option.ClientOption
+	pendingInserts  sync.Map
 }
 
 func (p *gcpProvider) ConfigVerifier() error {
@@ -44,13 +48,12 @@ func NewProvider(config *Config) (provider.Provider, error) {
 		instancesClient: nil,
 	}
 	if config.GcpCredentials != "" {
-		creds, err := credentials.NewCredentialsFromJSON(credentials.ServiceAccount, []byte(config.GcpCredentials), &credentials.DetectOptions{
-			Scopes: []string{computeScope},
-		})
+		creds, err := loadCredentials(config.GcpCredentials)
 		if err != nil {
 			return nil, fmt.Errorf("configuration error when using creds: %s", err)
 		}
-		provider.instancesClient, err = compute.NewInstancesRESTClient(context.TODO(), option.WithAuthCredentials(creds))
+		provider.clientOptions = []option.ClientOption{option.WithAuthCredentials(creds)}
+		provider.instancesClient, err = compute.NewInstancesRESTClient(context.TODO(), provider.clientOptions...)
 		if err != nil {
 			return nil, fmt.Errorf("NewInstancesRESTClient with credentials error: %s", err)
 		}
@@ -252,6 +255,11 @@ func (p *gcpProvider) updateInstanceSizeSpecList() error {
 
 func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID string, cloudConfig cloudinit.CloudConfigGenerator, spec provider.InstanceTypeSpec) (instance *provider.Instance, err error) {
 
+	dataDisks, err := existingDataDisks(p.serviceConfig.ProjectID, p.serviceConfig.Zone, spec.Volumes)
+	if err != nil {
+		return nil, fmt.Errorf("invalid CSI volumes: %w", err)
+	}
+
 	instanceName := util.GenerateInstanceName(podName, sandboxID, maxInstanceNameLen)
 	logger.Printf("CreateInstance: name: %q", instanceName)
 
@@ -385,6 +393,8 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 		NetworkInterfaces: []*computepb.NetworkInterface{networkInterface},
 	}
 
+	instanceResource.Disks = append(instanceResource.Disks, dataDisks...)
+
 	// Check if OnHostMaintenance needs to be set to TERMINATE
 	// This is required for:
 	// 1. Confidential VMs
@@ -421,13 +431,15 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 		InstanceResource: instanceResource,
 	}
 
-	op, err := p.instancesClient.Insert(ctx, insertReq)
+	op, err := p.insertInstance(ctx, insertReq, spec.Volumes)
 	if err != nil {
-		return nil, fmt.Errorf("Instances.Insert error: %s. req: %v", err, insertReq)
+		if _, pending := p.pendingInserts.Load(instanceName); pending {
+			return &provider.Instance{ID: instanceName, Name: instanceName}, fmt.Errorf("creating instance: %w", err)
+		}
+		return nil, fmt.Errorf("creating instance: %w", err)
 	}
-	err = op.Wait(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("waiting for Instances.Insert error: %s. req: %v", err, insertReq)
+	if err := p.waitForTrackedInstanceInsert(ctx, op, insertReq); err != nil {
+		return &provider.Instance{ID: instanceName, Name: instanceName}, err
 	}
 	logger.Printf("created an instance %s for sandbox %s", instanceName, sandboxID)
 
@@ -501,6 +513,9 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 }
 
 func (p *gcpProvider) DeleteInstance(ctx context.Context, instanceID string) error {
+	if err := p.finishPendingInsert(ctx, instanceID); err != nil {
+		return err
+	}
 	req := &computepb.DeleteInstanceRequest{
 		Project:  p.serviceConfig.ProjectID,
 		Zone:     p.serviceConfig.Zone,
@@ -508,6 +523,9 @@ func (p *gcpProvider) DeleteInstance(ctx context.Context, instanceID string) err
 	}
 	op, err := p.instancesClient.Delete(ctx, req)
 	if err != nil {
+		if instanceMissing(err) {
+			return nil
+		}
 		return fmt.Errorf("Instances.Delete error: %w, req: %v", err, req)
 	}
 	err = op.Wait(ctx)
@@ -529,4 +547,212 @@ func hasAnyPrefix(s string, prefixes ...string) bool {
 		}
 	}
 	return false
+}
+
+// existingDataDisks maps CSI disk identities to existing zonal or regional attachments.
+// API preflight and Instances.Insert additionally validate disk state and limits.
+// DeviceName is the guest lookup identity; it must not depend on list order.
+// Interface is omitted so Compute Engine selects a compatible interface for the VM.
+func existingDataDisks(project, zone string, volumes []provider.CloudVolume) ([]*computepb.AttachedDisk, error) {
+	var disks []*computepb.AttachedDisk
+	seen := make(map[string]bool, len(volumes))
+	devices := make(map[string]bool, len(volumes))
+	for _, volume := range volumes {
+		parts, parseErr := parseCSIDiskPath(volume.DiskID)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		location := zone
+		if parts[2] == "regions" {
+			i := strings.LastIndex(zone, "-")
+			if i < 0 {
+				return nil, fmt.Errorf("invalid PodVM zone %q", zone)
+			}
+			location = zone[:i]
+		}
+		if parts[1] != project || parts[3] != location {
+			return nil, fmt.Errorf("disk %q must be in PodVM project %q and zone %q", volume.DiskID, project, zone)
+		}
+		if seen[volume.DiskID] || devices[parts[4]] {
+			return nil, fmt.Errorf("duplicate disk %q", volume.DiskID)
+		}
+		seen[volume.DiskID] = true
+		devices[parts[4]] = true
+		disks = append(disks, &computepb.AttachedDisk{
+			Source:     proto.String(volume.DiskID),
+			DeviceName: proto.String(parts[4]),
+			Boot:       proto.Bool(false),
+			AutoDelete: proto.Bool(false),
+			Type:       proto.String(computepb.AttachedDisk_PERSISTENT.String()),
+			Mode:       proto.String(computepb.AttachedDisk_READ_WRITE.String()),
+		})
+	}
+	return disks, nil
+}
+
+var csiDiskPath = regexp.MustCompile(`^projects/([a-z][a-z0-9-]{4,28}[a-z0-9])/(zones|regions)/([a-z][a-z0-9-]*[0-9](?:-[a-z])?)/disks/([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)$`)
+
+func parseCSIDiskPath(path string) ([]string, error) {
+	parts := csiDiskPath.FindStringSubmatch(path)
+	if parts == nil {
+		return nil, fmt.Errorf("invalid GCP disk path %q", path)
+	}
+	isZone := strings.LastIndex(parts[3], "-") == len(parts[3])-2
+	if (parts[2] == "zones") != isZone {
+		return nil, fmt.Errorf("invalid GCP disk location %q", path)
+	}
+	return parts, nil
+}
+
+func validateReplicaZones(disk *computepb.Disk, project, region, zone string) error {
+	if disk == nil {
+		return fmt.Errorf("GCP returned no regional disk")
+	}
+	seen := map[string]bool{}
+	for _, replica := range disk.GetReplicaZones() {
+		replica = strings.TrimPrefix(replica, "https://www.googleapis.com/compute/v1/")
+		replica = strings.TrimPrefix(replica, "https://compute.googleapis.com/compute/v1/")
+		parts, err := parseCSIDiskPath(replica + "/disks/replica")
+		if err != nil || parts[1] != project || parts[2] != "zones" || parts[3][:strings.LastIndex(parts[3], "-")] != region || seen[parts[3]] {
+			return fmt.Errorf("invalid regional replica zones")
+		}
+		seen[parts[3]] = true
+	}
+	if len(seen) != 2 || !seen[zone] {
+		return fmt.Errorf("PodVM zone %q is not a disk replica zone", zone)
+	}
+	return nil
+}
+
+// Report only placement/operation identifiers: the request metadata contains
+// cloud-init with private TLS material and must never be serialized into errors.
+func waitForInstanceInsert(ctx context.Context, op *compute.Operation, req *computepb.InsertInstanceRequest) error {
+	if err := op.Wait(ctx); err != nil {
+		return fmt.Errorf("waiting for Instances.Insert (project=%s zone=%s instance=%s operation=%s): %w",
+			req.GetProject(), req.GetZone(), req.GetInstanceResource().GetName(), op.Name(), err)
+	}
+	return nil
+}
+
+// insertInstance keeps preflight immediately before the mutating request. A
+// successful preflight cannot prevent races; Insert errors still reach callers.
+func (p *gcpProvider) insertInstance(ctx context.Context, req *computepb.InsertInstanceRequest, volumes []provider.CloudVolume) (*compute.Operation, error) {
+	if len(volumes) > 0 {
+		resource := req.GetInstanceResource()
+		if len(resource.GetDisks()) == 0 {
+			return nil, fmt.Errorf("CSI preflight requires the boot disk request")
+		}
+		machine := resource.GetMachineType()
+		machine = machine[strings.LastIndex(machine, "/")+1:]
+		bootSize := resource.GetDisks()[0].GetInitializeParams().GetDiskSizeGb()
+		if err := p.validateVolumes(ctx, machine, bootSize, resource.GetDisks()[0].GetInitializeParams().GetDiskType(), resource.GetConfidentialInstanceConfig(), volumes); err != nil {
+			return nil, fmt.Errorf("CSI disk preflight: %w", err)
+		}
+	}
+	name := req.GetInstanceResource().GetName()
+	pending := &instanceInsert{}
+	if _, exists := p.pendingInserts.LoadOrStore(name, pending); exists {
+		return nil, fmt.Errorf("instance %s already has an unresolved insert", name)
+	}
+	pending.mutex.Lock()
+	defer pending.mutex.Unlock()
+	op, err := p.instancesClient.Insert(ctx, req)
+	pending.operation = op
+	if definitiveInsertRejection(err) {
+		p.pendingInserts.CompareAndDelete(name, pending)
+	}
+	return op, err
+}
+
+// validateVolumes checks zonal/regional disk state and PD/Hyperdisk limits including boot.
+// Instances.Insert validates remaining machine constraints and attachment races.
+func (p *gcpProvider) validateVolumes(ctx context.Context, machine string, bootSize int64, bootType string, confidential *computepb.ConfidentialInstanceConfig, volumes []provider.CloudVolume) error {
+	if len(volumes) == 0 {
+		return nil
+	}
+	if _, err := existingDataDisks(p.serviceConfig.ProjectID, p.serviceConfig.Zone, volumes); err != nil {
+		return err
+	}
+	if bootSize <= 0 {
+		return fmt.Errorf("invalid boot disk size %d", bootSize)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	machineClient, err := compute.NewMachineTypesRESTClient(ctx, p.clientOptions...)
+	if err != nil {
+		return fmt.Errorf("creating machine types client: %w", err)
+	}
+	defer machineClient.Close()
+	mt, err := machineClient.Get(ctx, &computepb.GetMachineTypeRequest{Project: p.serviceConfig.ProjectID, Zone: p.serviceConfig.Zone, MachineType: machine})
+	if err != nil {
+		return fmt.Errorf("reading machine type %q: %w", machine, err)
+	}
+	budget := diskBudget{machine: machine, mt: mt, confidential: confidential}
+	if err := budget.add(bootType, bootSize, 0, 0, true); err != nil {
+		return fmt.Errorf("boot disk exceeds or violates limits: %w", err)
+	}
+	disksClient, err := compute.NewDisksRESTClient(ctx, p.clientOptions...)
+	if err != nil {
+		return fmt.Errorf("creating disks client: %w", err)
+	}
+	defer disksClient.Close()
+	var regionalClient *compute.RegionDisksClient
+	defer func() {
+		if regionalClient != nil {
+			regionalClient.Close()
+		}
+	}()
+	for _, vol := range volumes {
+		parts, _ := parseCSIDiskPath(vol.DiskID)
+		name := parts[4]
+		regional := parts[2] == "regions"
+		var disk *computepb.Disk
+		if regional {
+			if regionalClient == nil {
+				regionalClient, err = compute.NewRegionDisksRESTClient(ctx, p.clientOptions...)
+				if err != nil {
+					return fmt.Errorf("creating regional disks client: %w", err)
+				}
+			}
+			disk, err = regionalClient.Get(ctx, &computepb.GetRegionDiskRequest{Project: p.serviceConfig.ProjectID, Region: parts[3], Disk: name})
+		} else {
+			disk, err = disksClient.Get(ctx, &computepb.GetDiskRequest{Project: p.serviceConfig.ProjectID, Zone: p.serviceConfig.Zone, Disk: name})
+		}
+		if err != nil {
+			return fmt.Errorf("reading disk %q: %w", vol.DiskID, err)
+		}
+		if disk == nil {
+			return fmt.Errorf("GCP returned no disk %q", vol.DiskID)
+		}
+		actualPath := strings.TrimPrefix(strings.TrimPrefix(disk.GetSelfLink(), "https://www.googleapis.com/compute/v1/"), "https://compute.googleapis.com/compute/v1/")
+		if (disk.GetName() != "" && disk.GetName() != name) || (actualPath != "" && actualPath != vol.DiskID) {
+			return fmt.Errorf("disk %q identity mismatch", vol.DiskID)
+		}
+		if regional {
+			typePath := strings.TrimPrefix(strings.TrimPrefix(disk.GetType(), "https://www.googleapis.com/compute/v1/"), "https://compute.googleapis.com/compute/v1/")
+			if strings.HasPrefix(typePath, "regions/") {
+				typePath = "projects/" + p.serviceConfig.ProjectID + "/" + typePath
+			}
+			expectedType := "projects/" + p.serviceConfig.ProjectID + "/regions/" + parts[3] + "/diskTypes/" + typePath[strings.LastIndex(typePath, "/")+1:]
+			if typePath != expectedType {
+				return fmt.Errorf("disk %q type placement mismatch", vol.DiskID)
+			}
+			if err := validateReplicaZones(disk, p.serviceConfig.ProjectID, parts[3], p.serviceConfig.Zone); err != nil {
+				return fmt.Errorf("disk %q: %w", vol.DiskID, err)
+			}
+		}
+		if disk.GetAccessMode() != "" && disk.GetAccessMode() != "READ_WRITE_SINGLE" {
+			return fmt.Errorf("disk %q requires single-writer access", vol.DiskID)
+		}
+		if disk.GetStatus() != "READY" {
+			return fmt.Errorf("disk %q is not READY (status %q)", vol.DiskID, disk.GetStatus())
+		}
+		if len(disk.GetUsers()) > 0 {
+			return fmt.Errorf("disk %q is already attached to %v", vol.DiskID, disk.GetUsers())
+		}
+		if err := budget.add(disk.GetType(), disk.GetSizeGb(), disk.GetProvisionedIops(), disk.GetProvisionedThroughput(), false, regional); err != nil {
+			return fmt.Errorf("disk %q: %w", vol.DiskID, err)
+		}
+	}
+	return nil
 }

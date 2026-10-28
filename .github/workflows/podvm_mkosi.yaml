@@ -30,6 +30,16 @@ on:
         default: 'none'
         required: false
         type: string
+      cloud-provider:
+        description: 'Use gcp for the patched GCP CDH image; empty keeps the native image.'
+        default: ''
+        required: false
+        type: string
+      gcp-cdh-artifact:
+        description: 'Attested downstream GCP CDH OCI reference including @sha256 digest.'
+        default: ''
+        required: false
+        type: string
 
   workflow_call:
     inputs:
@@ -58,6 +68,16 @@ on:
       tee-platform:
         description: Which TEE platform we are building the image for
         default: 'none'
+        required: false
+        type: string
+      cloud-provider:
+        description: 'Use gcp for the patched GCP CDH image; empty keeps the native image.'
+        default: ''
+        required: false
+        type: string
+      gcp-cdh-artifact:
+        description: 'Attested downstream GCP CDH OCI reference including @sha256 digest.'
+        default: ''
         required: false
         type: string
     secrets:
@@ -90,7 +110,24 @@ jobs:
       artifact-metadata: write  # Required by actions/attest to write attestation metadata
     outputs:
       qcow2_oras_image: ${{ steps.publish_oras_qcow2.outputs.image }}:${{ steps.publish_oras_qcow2.outputs.tag }}
+    # Empty provider preserves the native build and its upstream verifier.
+    env:
+      CLOUD_PROVIDER: ${{ inputs.cloud-provider }}
+      GCP_CDH_ARTIFACT: ${{ inputs.gcp-cdh-artifact }}
+      GCP_CDH_REPOSITORY: ${{ github.repository }}
     steps:
+      - name: Validate the selected image contract
+        env:
+          TARGET_ARCH: ${{ inputs.arch }}
+        run: |
+          case "$CLOUD_PROVIDER" in
+            ''|aws|azure) ;;
+            gcp)
+              test "$TARGET_ARCH" = amd64
+              [[ "$GCP_CDH_ARTIFACT" =~ ^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$ ]]
+              ;;
+            *) echo 'Unsupported cloud provider' >&2; exit 1 ;;
+          esac
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -122,7 +159,7 @@ jobs:
           password: ${{ secrets.QUAY_PASSWORD }}
 
       - name: Login to the ghcr Container registry
-        if: ${{ startsWith(inputs.registry, 'ghcr.io') }}
+        if: ${{ startsWith(inputs.registry, 'ghcr.io') || inputs.cloud-provider == 'gcp' }}
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
@@ -154,7 +191,11 @@ jobs:
       - name: Build binaries
         id: build_binaries
         working-directory: src/cloud-api-adaptor/podvm
-        run: make podvm-binaries
+        run: |
+          if [ "$CLOUD_PROVIDER" = gcp ]; then
+            export AUTHFILE="$HOME/.docker/config.json"
+          fi
+          make podvm-binaries
         env:
           ARCH: ${{ inputs.arch }}
           TEE_PLATFORM: ${{ inputs.tee-platform }}
@@ -182,7 +223,7 @@ jobs:
           cd oras
           cp ../build/podvm-*.qcow2 .
           tar cJf podvm.tar.xz podvm-*.qcow2
-          image="${REGISTRY}/podvm-${ARCH}${TEE_PLATFORM:+-${TEE_PLATFORM}}${DEBUG:+-debug}"
+          image="${REGISTRY}/podvm-${ARCH}${TEE_PLATFORM:+-${TEE_PLATFORM}}${DEBUG:+-debug}${PROVIDER_SUFFIX}"
           tag="$(git rev-parse --short HEAD)"
           oras push "${image}:${tag}" podvm.tar.xz
 
@@ -198,6 +239,7 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
         env:
           DEBUG: ${{ inputs.debug == true && '1' || '' }}
+          PROVIDER_SUFFIX: ${{ inputs.cloud-provider == 'gcp' && '-gcp' || '' }}
           REGISTRY: ${{ inputs.registry }}
           ARCH: ${{ inputs.arch }}
           IMAGE_TAG: ${{ inputs.image_tag }}

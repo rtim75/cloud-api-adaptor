@@ -16,7 +16,9 @@ make # this will rebuild the builder, the binaries and the OS image
 
 > [!WARNING]
 > The `make` (and `make podvm-binaries`) targets will remove all customization made
-> in the `./resources/binaries-tree` dirs
+> in the generated binary tree: `resources/binaries-tree-gcp` for GCP, or
+> `resources/binaries-tree` otherwise. Add custom files after building binaries
+> and before building the image.
 
 ```sh
 make image # this will only rebuild the pod VM image
@@ -35,6 +37,97 @@ TEE_PLATFORM=snp make image
 Likewise `TEE_PLATFORM=az-cvm-vtpm` will enable support for Azure vTPM attesters.
 
 Refer to the following [doc](https://github.com/confidential-containers/guest-components/tree/main?tab=readme-ov-file#build) for accepted values of TEE_PLATFORM.
+
+### GCP guest images
+
+Set `CLOUD_PROVIDER=gcp` for both binary and image builds. GCP uses a patched
+CDH that stores LUKS2 headers on the persistent disk so they survive PodVM
+recreation and disk copies. Generic builds use upstream CDH.
+
+Run from this directory on a builder matching the target architecture; the GCP
+CDH build does not support cross-compilation. For an x86_64 TDX target:
+
+```sh
+make CLOUD_PROVIDER=gcp TEE_PLATFORM=tdx podvm-binaries
+# Add optional files to resources/binaries-tree-gcp before the next step.
+make CLOUD_PROVIDER=gcp TEE_PLATFORM=tdx image
+```
+
+Choose `TEE_PLATFORM` for the VM/TEE, image and disk type. Use
+`CLOUD_PROVIDER=gcp` for `image-debug` or `image-sftp` as well. Default GCP
+binary/image container tags have a `-gcp` suffix. Binaries are exported to
+`resources/binaries-tree-gcp`; the OS image is `build/system.raw`. The QCOW2
+filename is shared with generic builds, so save outputs from different
+providers separately.
+
+Before building the image, inspect
+`resources/binaries-tree-gcp/usr/local/bin/confidential-data-hub.build-info`.
+It records the guest-components commit, `header=inline`, Cargo features, Rust
+version, and patch/binary SHA256 hashes. Compare its `binary-sha256`
+with:
+
+```sh
+sha256sum resources/binaries-tree-gcp/usr/local/bin/confidential-data-hub
+```
+
+Local source builds use `VERIFY_PROVENANCE=no`, like the native build default.
+Their build-info file is unsigned. The build script rejects guest-components
+revisions for which the patch has not been reviewed.
+
+For a verified GCP release, use the downstream CDH artifact rather than applying
+upstream provenance to a modified binary:
+
+1. On the reviewed `main` commit, explicitly run the **Publish attested GCP CDH**
+   workflow (`.github/workflows/gcp_cdh.yaml`). It builds and tests x86_64 CDH,
+   publishes the binary and build-info as one GHCR OCI artifact, and attests its
+   digest with the same `actions/attest` mechanism used for native image releases.
+   The workflow does not accept an arbitrary source checkout or run on PRs.
+2. Save the immutable `GCP_CDH_ARTIFACT` reference and `GCP_CDH_REF` commit from
+   its summary. Use that same CAA source commit for the consuming image build.
+3. Run **Create Pod VM image with mkosi** with `cloud-provider=gcp`,
+   `gcp-cdh-artifact=<the OCI reference including @sha256 digest>`, `arch=amd64`,
+   the matching `git_ref`, and the appropriate `tee-platform`. This keeps
+   `VERIFY_PROVENANCE=yes`, selects the GCP image tree and `-gcp` publication
+   name, and attests the final image digest through the existing release step.
+   **Publish pod VM Images** also accepts these GCP inputs; its native defaults
+   and native architecture matrix are retained.
+
+For a local verified build, check out the same source commit and run:
+
+```sh
+make CLOUD_PROVIDER=gcp TEE_PLATFORM=tdx VERIFY_PROVENANCE=yes \
+  GCP_CDH_ARTIFACT='<registry/path@sha256:64-hex-digest>' \
+  GCP_CDH_REF='<40-character-CAA-source-commit>' \
+  GCP_CDH_REPOSITORY=qlad-secure/cloud-api-adaptor \
+  podvm-binaries
+make CLOUD_PROVIDER=gcp TEE_PLATFORM=tdx image
+```
+
+`GCP_CDH_REF` defaults to the current checkout commit. The repository defaults to
+`qlad-secure/cloud-api-adaptor`; the release workflow trusts its own repository.
+For private GHCR artifacts, log in to GHCR and pass `AUTHFILE` pointing to the
+Docker-compatible registry config. GCP passes this file as a BuildKit secret;
+its contents are not copied into build layers. The workflow configures this
+credential mount automatically.
+
+The consumer verifies the signed OCI subject, exact producer workflow, CAA
+source/workflow commit, `main` ref and hosted runner. It also checks the signed
+build-info against the requested guest-components revision, current patch,
+architecture, features, Rust version and binary hash before installation.
+Missing/invalid provenance or mismatched inputs fail the build, including when
+an older CDH binary already exists; there is no fallback to an unsigned build.
+Other guest dependencies retain their existing upstream verification. The
+initial downstream producer supports x86_64; it does not introduce signed
+cross-compilation or change the native AWS/Azure verifier.
+
+The GCP producer is dispatched explicitly; select GCP explicitly in the image
+publication workflow too. Existing native release callers keep their defaults.
+The repository must allow GHCR package publication and GitHub artifact attestations.
+
+This image supports newly initialized disks and existing inline LUKS2 disks.
+Disks with detached headers require separate migration. Preserve their headers
+and KBS key references; do not attach them as empty volumes. A replacement image
+cannot reconstruct a lost header.
 
 ### Upload the image to the desired cloud provider
 
@@ -90,15 +183,44 @@ to the podvm.
 >     mkdir -p ./resources/binaries-tree/etc/default
 >     echo "TLS_OPTIONS=-disable-tls" > ./resources/binaries-tree/etc/default/agent-protocol-forwarder
 >
+> For GCP, place this file under `resources/binaries-tree-gcp/etc/default`
+> instead, and build with `CLOUD_PROVIDER=gcp`.
+>
 > Do not forget to re-enable it before sending the image to production.
 
 ## Custom image configuration
 
-You can easily place additional files in `resources/binaries-tree` after it has been populated by the
-`make podvm-binaries` step. Notice that systemd units need to be enabled in the presets and links in the tree
-won't be copied into the image. You can use `./mkosi.postinst` script to create symlinks.
+For all providers, add custom files to the generated binary tree after
+`make podvm-binaries` and before `make image`, using paths relative to the guest
+root. Choose the tree for the provider:
 
-If you want to add additional packages to the image, you can define a config file like `mkosi.presets/system/mkosi.conf.d/ubuntu-extra.conf`:
+| Provider | Binary tree |
+| --- | --- |
+| Generic, AWS, Azure | `resources/binaries-tree` |
+| GCP (`CLOUD_PROVIDER=gcp`) | `resources/binaries-tree-gcp` |
+
+For example, replace the GCP guest's default agent policy after the binary build:
+
+```sh
+cp your-policy.rego resources/binaries-tree-gcp/etc/kata-opa/allow-all.rego
+make CLOUD_PROVIDER=gcp image
+```
+
+An image-only build preserves these files. A new `podvm-binaries` build replaces
+the selected tree, so keep the originals outside it and reapply them afterward.
+GCP image builds use only the GCP tree; custom files in `resources/binaries-tree`
+are not imported. When adapting a generic build workspace for GCP, copy only
+your custom files into the freshly generated GCP tree, not the generic binaries.
+
+Enable custom systemd units through presets. Use the
+[system post-install hook](mkosi.images/system/mkosi.postinst) for links that
+need to be created during image construction.
+
+Run the offline tree-selection and customization checks with
+`python3 hack/test-gcp-image.py`. These checks use temporary files and Make
+dry-runs; they do not build or boot a guest image.
+
+To add packages, create `mkosi.images/system/mkosi.conf.d/ubuntu-extra.conf`:
 ```ini
 [Match]
 Distribution=ubuntu

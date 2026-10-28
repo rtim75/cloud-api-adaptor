@@ -1,0 +1,11 @@
+Source: https://github.com/GoogleCloudPlatform/guest-configs
+Commit: 001213a46ea997e6b15a885f278cec19659e1936
+Tag: 20260623.00
+Files are copied unchanged from upstream.
+google_nvme_id: src/lib/udev/google_nvme_id
+65-gce-disk-naming.rules: src/lib/udev/rules.d/65-gce-disk-naming.rules
+
+SHA256:
+dbacf9cf68d95088e78f391aefedc33fb468b7cc2dfa053c571a61280292cd9e  google_nvme_id
+adb493b4c7ce9815e7e3989967a93a0417d5e593830b8ecca3f1775d33f86686  65-gce-disk-naming.rules
+38b56dc9fc1aa16ed7d01f0c2b84a02f6502baabb86aef8ab5e6abc1d5c2c779  LICENSE

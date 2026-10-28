@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,8 +59,9 @@ type cloudMount struct {
 type interceptor struct {
 	agentproto.Redirector
 
-	nsPath      string
-	cloudMounts []cloudMount
+	nsPath       string
+	cloudMounts  []cloudMount
+	findDataDisk func(int, string) (string, error) // nil uses platform discovery
 }
 
 func (i *interceptor) unmountCloudVolumes() {
@@ -198,7 +200,11 @@ func (i *interceptor) CreateContainer(ctx context.Context, req *pb.CreateContain
 			}
 
 			diskID := volInfo.DiskID
-			device, err := findDataDiskDevice(lunIdx, diskID)
+			lookup := i.findDataDisk
+			if lookup == nil {
+				lookup = findDataDiskDevice
+			}
+			device, err := lookup(lunIdx, diskID)
 			if err != nil {
 				return nil, fmt.Errorf("cloud volume %s: %w", volName, err)
 			}
@@ -416,14 +422,32 @@ func detectCloudProvider() string {
 
 // findDataDiskDevice locates the block device for the given LUN index.
 // It auto-detects the cloud provider and uses provider-specific paths,
-// then falls back to sysfs HCTL-based LUN matching.
+// then falls back to sysfs HCTL-based LUN matching for non-GCP providers.
+// GCP resource IDs require exact by-id discovery and never use LUN fallback.
 // diskID is the cloud-provider volume identifier (e.g. EBS vol-xxx); it
 // may be empty for providers that rely purely on LUN-index matching.
 //
 // Data disks may take several seconds to appear in the PodVM after boot
 // (SCSI rescan, udev rules), so the entire detection is retried.
 func findDataDiskDevice(lunIdx int, diskID string) (string, error) {
-	provider := detectCloudProvider()
+	return findDataDiskDeviceWithGCP(lunIdx, diskID, findGCPDataDisk)
+}
+
+var azureDiskResourceID = regexp.MustCompile(`(?i)^/subscriptions/[^/]+/resourceGroups/[^/]+/providers/Microsoft\.Compute/disks/[^/]+$`)
+
+// findDataDiskDeviceWithGCP retries provider-specific discovery with an injectable
+// GCP lookup. GCP identities require exact matches and never use LUN fallback.
+func findDataDiskDeviceWithGCP(lunIdx int, diskID string, gcpLookup func(string) (string, error)) (string, error) {
+	provider := "gcp"
+	// Classify from the resource identity before device probing: the GCP disk
+	// may not have appeared yet. Invalid GCP-looking IDs must not use LUN fallback.
+	// Azure resource groups may end in "projects"; their ARM disk IDs must
+	// retain platform discovery rather than enter GCP identity validation.
+	if azureDiskResourceID.MatchString(diskID) || !strings.Contains(diskID, "projects/") {
+		provider = detectCloudProvider()
+	} else if gcpDiskParts(diskID) == nil {
+		return "", fmt.Errorf("invalid GCP disk path %q", diskID)
+	}
 	logger.Printf("Cloud provider detected: %s (LUN %d, diskID %s)", provider, lunIdx, diskID)
 
 	maxAttempts := 15
@@ -447,6 +471,17 @@ func findDataDiskDevice(lunIdx int, diskID string) (string, error) {
 		if attempt > 1 {
 			logger.Printf("Retry %d/%d for LUN %d...", attempt, maxAttempts, lunIdx)
 			time.Sleep(retryDelay)
+		}
+
+		if provider == "gcp" {
+			dev, err := gcpLookup(diskID)
+			if err == nil {
+				return dev, nil
+			}
+			if attempt == maxAttempts {
+				return "", fmt.Errorf("GCP disk %s after %d attempts: %w", diskID, maxAttempts, err)
+			}
+			continue // Never fall back to HCTL/index-based discovery for a GCP identity.
 		}
 
 		switch provider {

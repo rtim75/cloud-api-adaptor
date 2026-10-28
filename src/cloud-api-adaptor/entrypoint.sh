@@ -79,8 +79,17 @@ gcp() {
     test_vars GCP_CREDENTIALS GCP_PROJECT_ID GCP_ZONE PODVM_IMAGE_NAME
 
     # Avoid using node's metadata service credentials for GCP authentication
-    echo "$GCP_CREDENTIALS" > /tmp/gcp-creds.json
-    export GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcp-creds.json
+    local credentials_file
+    if ! credentials_file=$(mktemp /tmp/gcp-creds.XXXXXX); then
+        echo "Failed to create GCP credentials file" >&2
+        exit 1
+    fi
+    if ! printf '%s\n' "$GCP_CREDENTIALS" > "$credentials_file"; then
+        rm -f "$credentials_file"
+        echo "Failed to write GCP credentials file" >&2
+        exit 1
+    fi
+    export GOOGLE_APPLICATION_CREDENTIALS="$credentials_file"
 
     set -x
     exec cloud-api-adaptor gcp ${optionals}
