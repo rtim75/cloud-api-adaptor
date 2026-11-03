@@ -286,6 +286,21 @@ class ReleaseSelectionTests(unittest.TestCase):
         self.assertEqual(publisher["with"]["gcp-cdh-artifact"], "${{ inputs.gcp-cdh-artifact }}")
         self.assertIn('fromJSON(\'["amd64","s390x","arm64"]\')', publisher["strategy"]["matrix"]["arch"])
 
+    def test_ghcr_publication_and_quay_copy_preserve_gcp_selection(self):
+        workflow = self.workflow("podvm_mkosi.yaml")
+        self.assertNotIn("registry", workflow["on"]["workflow_call"]["inputs"])
+        steps = workflow["jobs"]["build-image"]["steps"]
+        publish = next(step for step in steps if step.get("id") == "publish_oras_qcow2")
+        self.assertEqual(publish["env"]["REGISTRY"], "ghcr.io/${{ github.repository_owner }}")
+        self.assertIn("${PROVIDER_SUFFIX}", publish["run"])
+        login = next(step for step in steps if step.get("name") == "Login to the ghcr Container registry")
+        self.assertNotIn("if", login)
+        jobs = self.workflow("podvm_publish.yaml")["jobs"]
+        self.assertEqual(jobs["podvm"]["strategy"]["matrix"], jobs["push-to-quay"]["strategy"]["matrix"])
+        copy = jobs["push-to-quay"]["steps"][-1]
+        self.assertEqual(copy["env"]["PROVIDER_SUFFIX"], publish["env"]["PROVIDER_SUFFIX"])
+        self.assertIn("podvm-${ARCH}${PROVIDER_SUFFIX}:${IMAGE_TAG}", copy["run"])
+
     def test_builder_maps_host_authfile_to_secret_for_all_gcp_dependencies(self):
         # Execute the actual RUN body with a synthetic secret and make command.
         # This catches a host-only AUTHFILE path leaking into skopeo in the builder.

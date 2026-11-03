@@ -41,6 +41,16 @@ func (p *gcpProvider) ConfigVerifier() error {
 	return nil
 }
 
+// authOptions returns the client options needed for GCP API clients to use
+// the explicit credentials from GCP_CREDENTIALS, if any were configured.
+// Without this, clients silently fall back to Application Default
+// Credentials (the node's own service account), which can fail with
+// "insufficient authentication scopes" when that account lacks compute
+// scope.
+func (p *gcpProvider) authOptions() []option.ClientOption {
+	return p.clientOptions
+}
+
 func NewProvider(config *Config) (provider.Provider, error) {
 	logger.Printf("gcp config: %#v", config.Redact())
 	provider := &gcpProvider{
@@ -163,7 +173,7 @@ func (p *gcpProvider) ListAllTags(ctx context.Context) (map[string]map[string]*r
 }
 
 func (p *gcpProvider) getImageSizeGB(ctx context.Context, image string) (int64, error) {
-	client, err := compute.NewImagesRESTClient(ctx)
+	client, err := compute.NewImagesRESTClient(ctx, p.authOptions()...)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create compute client: %w", err)
 	}
@@ -215,7 +225,7 @@ func (p *gcpProvider) selectMachineType(ctx context.Context, spec provider.Insta
 }
 
 func (p *gcpProvider) updateInstanceSizeSpecList() error {
-	machineTypeClient, err := compute.NewMachineTypesRESTClient(context.TODO())
+	machineTypeClient, err := compute.NewMachineTypesRESTClient(context.TODO(), p.authOptions()...)
 	if err != nil {
 		return err
 	}
@@ -464,9 +474,10 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 	// Binding all the tagValues to the instance that was already created
 	// Specific endpoint is needed for tag bindings because global endpoint
 	// doesn't work for zonal resources.
-	tagBindingsClient, err := crm.NewTagBindingsClient(ctx,
+	tagBindingsOpts := append(p.authOptions(),
 		option.WithEndpoint(fmt.Sprintf("%s-cloudresourcemanager.googleapis.com:443", p.serviceConfig.Zone)),
 	)
+	tagBindingsClient, err := crm.NewTagBindingsClient(ctx, tagBindingsOpts...)
 	if err != nil {
 		return instance, fmt.Errorf("failed to create bind client: %w", err)
 	}

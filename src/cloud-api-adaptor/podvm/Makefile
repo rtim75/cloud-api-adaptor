@@ -86,7 +86,7 @@ endif
 		--build-arg VERIFY_PROVENANCE=$(VERIFY_PROVENANCE) \
 		$(if $(AUTHFILE),--build-arg AUTHFILE=$(AUTHFILE),) \
 		$(if $(DEFAULT_AGENT_POLICY_FILE),--build-arg DEFAULT_AGENT_POLICY_FILE=$(DEFAULT_AGENT_POLICY_FILE),) \
-		$(if $(filter $(EXPORT_BINARIES),false),,-o type=local,dest="./resources/binaries-tree$(if $(filter gcp,$(CLOUD_PROVIDER)),-gcp,)") \
+		$(if $(filter $(EXPORT_BINARIES),false),--load,-o type=local,dest="./resources/binaries-tree$(if $(filter gcp,$(CLOUD_PROVIDER)),-gcp,)") \
 		$(DOCKER_OPTS) \
 		-f Dockerfile.podvm_binaries ../../
 
