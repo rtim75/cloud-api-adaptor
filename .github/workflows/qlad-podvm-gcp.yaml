@@ -1,0 +1,131 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/SchemaStore/schemastore/refs/heads/master/src/schemas/json/github-workflow.json
+# SPDX-License-Identifier: Apache-2.0
+# GCP SNP build based on podvm_mkosi.yaml. Uses uplosi to create a Compute
+# Engine image from build/system.raw; does not boot a VM or publish to GAR.
+# Required Actions variables:
+#   GCP_WORKLOAD_IDENTITY_PROVIDER
+#   GCP_BUILD_SERVICE_ACCOUNT
+# GCP project, location and staging bucket come from podvm/uplosi.conf.
+# Restrict WIF trust to this repository and trusted workflow refs, and only
+# build trusted git_ref values. The build identity needs Compute Image Admin
+# on the target project and Storage Admin for uplosi's staging bucket creation
+# and object cleanup (or equivalent narrower permissions for an existing bucket).
+name: QLAD GCP PodVM
+
+on:
+  push:
+    branches:
+      - feature/podvm-workflow
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: Trusted QLAD branch, tag, or commit to build
+        required: true
+        default: main
+        type: string
+      debug:
+        description: Whether to build the image in debug mode
+        default: false
+        required: false
+        type: boolean
+
+defaults:
+  run:
+    working-directory: src/cloud-api-adaptor
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.git_ref || github.sha }}-${{ inputs.debug }}
+  cancel-in-progress: true
+
+permissions: {}
+
+jobs:
+  build-image:
+    name: Build GCP SNP mkosi image for amd64
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      id-token: write # Required for GCP Workload Identity Federation
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: qlad-secure/cloud-api-adaptor
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.git_ref || github.sha }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            alien \
+            bubblewrap \
+            dnf \
+            qemu-utils \
+            uidmap
+          command -v yq || sudo snap install yq
+          yq --version | grep -qE 'v4\.[0-9]+' || { echo "yq version is not 4.x, please install yq 4.x"; exit 1; }
+
+      - name: Read properties from versions.yaml
+        run: |
+          echo "MKOSI_VERSION=$(yq -e '.tools.mkosi' versions.yaml)" >> "$GITHUB_ENV"
+          echo "ORAS_VERSION=$(yq -e '.tools.oras' versions.yaml)" >> "$GITHUB_ENV"
+
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        with:
+          version: ${{ env.ORAS_VERSION }}
+
+      # Prebuilt dependencies are pulled from upstream GHCR; no GHCR publishing.
+      - name: Build binaries
+        working-directory: src/cloud-api-adaptor/podvm
+        run: make podvm-binaries
+        env:
+          ARCH: amd64
+          TEE_PLATFORM: snp
+          VERIFY_PROVENANCE: 'yes'
+
+      - name: Build mkosi debug image
+        if: ${{ inputs.debug == true }}
+        working-directory: src/cloud-api-adaptor/podvm
+        run: make image-debug
+        env:
+          MKOSI_VERSION: ${{ env.MKOSI_VERSION }}
+
+      - name: Build mkosi image
+        if: ${{ inputs.debug != true }}
+        working-directory: src/cloud-api-adaptor/podvm
+        run: make image
+        env:
+          MKOSI_VERSION: ${{ env.MKOSI_VERSION }}
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true # ADC for uplosi's GCP clients
+
+      - name: Install uplosi
+        env:
+          UPLOSI_VERSION: '0.4.0'
+          UPLOSI_SHA256: ae6db020be6d1c72ab6138827629d7e89ad73f1e3998714ad3f29c2cfb410012
+        run: |
+          archive="uplosi_${UPLOSI_VERSION}_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location \
+            "https://github.com/edgelesssys/uplosi/releases/download/v${UPLOSI_VERSION}/${archive}" \
+            --output "${RUNNER_TEMP}/${archive}"
+          printf '%s  %s\n' "$UPLOSI_SHA256" "${RUNNER_TEMP}/${archive}" | sha256sum --check
+          mkdir -p "${RUNNER_TEMP}/uplosi-bin"
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}/uplosi-bin" uplosi
+          echo "${RUNNER_TEMP}/uplosi-bin" >> "$GITHUB_PATH"
+
+      - name: Upload image with uplosi
+        working-directory: src/cloud-api-adaptor/podvm
+        run: uplosi upload build/system.raw
+
