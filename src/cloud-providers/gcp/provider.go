@@ -373,6 +373,12 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 		}
 	}
 
+	bootDiskType := p.serviceConfig.DiskType
+
+	if strings.HasPrefix(bootDiskType, "g4") {
+		bootDiskType = "hyperdisk-balanced"
+	}
+
 	instanceResource := &computepb.Instance{
 		Name: proto.String(instanceName),
 		Disks: []*computepb.AttachedDisk{
@@ -380,7 +386,7 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 				InitializeParams: &computepb.AttachedDiskInitializeParams{
 					DiskSizeGb:  proto.Int64(imageSizeGB),
 					SourceImage: srcImage,
-					DiskType:    proto.String(fmt.Sprintf("zones/%s/diskTypes/%s", p.serviceConfig.Zone, p.serviceConfig.DiskType)),
+					DiskType:    proto.String(fmt.Sprintf("zones/%s/diskTypes/%s", p.serviceConfig.Zone, bootDiskType)),
 				},
 				AutoDelete: proto.Bool(true),
 				Boot:       proto.Bool(true),
@@ -416,8 +422,13 @@ func (p *gcpProvider) CreateInstance(ctx context.Context, podName, sandboxID str
 			return nil, fmt.Errorf("ConfidentialType must be set when using Confidential VM.")
 		}
 
+		confidentialType := p.serviceConfig.ConfidentialType
+		if strings.HasPrefix(machineType, "g4") {
+			confidentialType = "SEV"
+		}
+
 		instanceResource.ConfidentialInstanceConfig = &computepb.ConfidentialInstanceConfig{
-			ConfidentialInstanceType:  proto.String(p.serviceConfig.ConfidentialType),
+			ConfidentialInstanceType:  proto.String(confidentialType),
 			EnableConfidentialCompute: proto.Bool(true),
 		}
 		requiresTerminatePolicy = true
@@ -767,3 +778,4 @@ func (p *gcpProvider) validateVolumes(ctx context.Context, machine string, bootS
 	}
 	return nil
 }
+

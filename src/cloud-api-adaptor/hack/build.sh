@@ -74,7 +74,6 @@ function build_caa_payload_image() {
 		--build-arg YQ_VERSION="${YQ_VERSION}" \
 		-f cloud-api-adaptor/Dockerfile \
 		${tag_string} \
-		--push \
 		.
 	popd
 }
@@ -89,3 +88,4 @@ while getopts ":i" option; do
             echo "Error: Invalid option"
    esac
 done
+

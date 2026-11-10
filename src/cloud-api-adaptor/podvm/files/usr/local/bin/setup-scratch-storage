@@ -42,13 +42,11 @@ fi
 MOUNT_POINT="/run/kata-containers/image"
 mkdir -p "$MOUNT_POINT"
 
-# Get device number for the encryption script
-# Using xargs to strip leading/trailing whitespace
-DEV_NUM=$(lsblk -no MAJ:MIN "$DEV_PATH" | xargs)
+# Development only: no guest-side encryption or integrity protection.
+# Destructive: reformat the dedicated scratch partition on every VM boot.
+echo "Formatting unencrypted scratch storage: $DEV_PATH"
+mkfs.ext4 -F -E lazy_itable_init=1,lazy_journal_init=1 "$DEV_PATH"
 
-# Generate encryption key and use LUKS encryption
-echo "Setting up LUKS encrypted scratch storage"
-head -c 4096 /dev/urandom >/run/encrypt_storage.key
-/usr/local/bin/luks-encrypt-storage "$DEV_NUM" false "$MOUNT_POINT" /run/encrypt_storage.key
+mount "$DEV_PATH" "$MOUNT_POINT"
 
-echo "Scratch storage setup completed"
+echo "Scratch storage mounted at $MOUNT_POINT"

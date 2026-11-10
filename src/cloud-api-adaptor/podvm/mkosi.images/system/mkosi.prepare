@@ -1,0 +1,9 @@
+#!/bin/sh
+
+set -eu
+
+if [ "$1" = final ]; then
+  rmdir "$BUILDROOT/usr/lib/modules/kernel/nvidia-580srv-open"
+  rmdir "$BUILDROOT/usr/lib/modules/kernel"
+fi
+
