@@ -74,33 +74,33 @@ jobs:
           echo "MKOSI_VERSION=$(yq -e '.tools.mkosi' versions.yaml)" >> "$GITHUB_ENV"
           echo "ORAS_VERSION=$(yq -e '.tools.oras' versions.yaml)" >> "$GITHUB_ENV"
 
-      # - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
-      #   with:
-      #     version: ${{ env.ORAS_VERSION }}
-      #
-      # # Prebuilt dependencies are pulled from upstream GHCR; no GHCR publishing.
-      # - name: Build binaries
-      #   working-directory: src/cloud-api-adaptor/podvm
-      #   run: make podvm-binaries
-      #   env:
-      #     ARCH: amd64
-      #     # Upstream publishes the SNP attester under the "amd" artifact tag.
-      #     TEE_PLATFORM: amd
-      #     VERIFY_PROVENANCE: 'yes'
-      #
-      # - name: Build mkosi debug image
-      #   if: ${{ inputs.debug == true }}
-      #   working-directory: src/cloud-api-adaptor/podvm
-      #   run: make image-debug
-      #   env:
-      #     MKOSI_VERSION: ${{ env.MKOSI_VERSION }}
-      #
-      # - name: Build mkosi image
-      #   if: ${{ inputs.debug != true }}
-      #   working-directory: src/cloud-api-adaptor/podvm
-      #   run: make image
-      #   env:
-      #     MKOSI_VERSION: ${{ env.MKOSI_VERSION }}
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+        with:
+          version: ${{ env.ORAS_VERSION }}
+
+      # Prebuilt dependencies are pulled from upstream GHCR; no GHCR publishing.
+      - name: Build binaries
+        working-directory: src/cloud-api-adaptor/podvm
+        run: make podvm-binaries
+        env:
+          ARCH: amd64
+          # Upstream publishes the SNP attester under the "amd" artifact tag.
+          TEE_PLATFORM: amd
+          VERIFY_PROVENANCE: 'yes'
+
+      - name: Build mkosi debug image
+        if: ${{ inputs.debug == true }}
+        working-directory: src/cloud-api-adaptor/podvm
+        run: make image-debug
+        env:
+          MKOSI_VERSION: ${{ env.MKOSI_VERSION }}
+
+      - name: Build mkosi image
+        if: ${{ inputs.debug != true }}
+        working-directory: src/cloud-api-adaptor/podvm
+        run: make image
+        env:
+          MKOSI_VERSION: ${{ env.MKOSI_VERSION }}
 
       - name: Authenticate to Google Cloud
         id: auth
@@ -131,6 +131,5 @@ jobs:
           UPLOSI_CONFIG: ${{ vars.UPLOSI_CONFIG }}
         run: |
           printf '%s\n' "$UPLOSI_CONFIG" > uplosi.conf
-          cat uplosi.conf
-          # uplosi upload build/system.raw
+          uplosi upload build/system.raw
 
