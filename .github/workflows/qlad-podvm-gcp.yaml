@@ -84,7 +84,8 @@ jobs:
         run: make podvm-binaries
         env:
           ARCH: amd64
-          TEE_PLATFORM: snp
+          # Upstream publishes the SNP attester under the "amd" artifact tag.
+          TEE_PLATFORM: amd
           VERIFY_PROVENANCE: 'yes'
 
       - name: Build mkosi debug image
