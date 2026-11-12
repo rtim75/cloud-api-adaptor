@@ -6,10 +6,10 @@
 name: daily e2e tests
 
 on:
-  schedule:
-  # Runs "at 04:15(UTC time) every day" (see https://crontab.guru)
-  # will base on default branch `main`
-    - cron: '15 4 * * *'
+  # schedule:
+  # # Runs "at 04:15(UTC time) every day" (see https://crontab.guru)
+  # # will base on default branch `main`
+  #   - cron: '15 4 * * *'
   workflow_dispatch:
     inputs:
       git_ref:
@@ -46,3 +46,4 @@ jobs:
       AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+

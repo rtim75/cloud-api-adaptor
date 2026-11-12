@@ -6,9 +6,9 @@
 name: Publish project images
 
 on:
-  push:
-    branches:
-      - 'main'
+  # push:
+  #   branches:
+  #     - 'main'
   workflow_dispatch:
     inputs:
       registry:
@@ -64,3 +64,4 @@ jobs:
       id-token: write      # Required for attestation signing
       attestations: write  # Required for persisting attestations
       artifact-metadata: write  # Required by actions/attest
+

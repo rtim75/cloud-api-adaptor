@@ -1,8 +1,8 @@
 name: GitHub Actions Security Analysis with 🌈zizmor
 
 on:
-  push:
-    branches: [ "main" ]
+  # push:
+  #   branches: [ "main" ]
   pull_request:
   schedule:
   - cron: "0 3 * * 1" # Every Monday Weekly
@@ -30,3 +30,4 @@ jobs:
         advanced-security: false
         annotations: true
         persona: auditor
+

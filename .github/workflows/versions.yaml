@@ -8,14 +8,14 @@
 name: versions
 
 on:
-  push:
-    branches:
-      - 'main'
-    paths:
-      - 'src/cloud-api-adaptor/versions.yaml'
-      - 'src/cloud-api-adaptor/cmd/versions/**'
-      - 'src/cloud-api-adaptor/pkg/versions/**'
-      - '.github/workflows/versions.yaml'
+  # push:
+  #   branches:
+  #     - 'main'
+  #   paths:
+  #     - 'src/cloud-api-adaptor/versions.yaml'
+  #     - 'src/cloud-api-adaptor/cmd/versions/**'
+  #     - 'src/cloud-api-adaptor/pkg/versions/**'
+  #     - '.github/workflows/versions.yaml'
   pull_request:
     paths:
       - 'src/cloud-api-adaptor/versions.yaml'
@@ -45,3 +45,4 @@ jobs:
       - name: Validate versions.yaml against the embedded schema
         working-directory: src/cloud-api-adaptor
         run: make versions-check
+

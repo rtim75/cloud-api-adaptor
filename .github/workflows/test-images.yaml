@@ -2,12 +2,12 @@ name: Create Test Images
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - 'main'
-    paths:
-      - 'src/cloud-api-adaptor/test/e2e/fixtures/Dockerfile.*'
-      - '.github/workflows/test-images.yaml'
+  # push:
+  #   branches:
+  #     - 'main'
+  #   paths:
+  #     - 'src/cloud-api-adaptor/test/e2e/fixtures/Dockerfile.*'
+  #     - '.github/workflows/test-images.yaml'
 
 defaults:
   run:
@@ -78,3 +78,4 @@ jobs:
         file: src/cloud-api-adaptor/${{matrix.targets}}
         build-args: |
           "ARCH=${{ matrix.arch }}"
+

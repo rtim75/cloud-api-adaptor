@@ -7,10 +7,10 @@ name: OSV-Scanner (Scheduled)
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 1 * * 0'  # Weekly on Sunday at 1 AM UTC
-  push:
-    branches: [ "main" ]
+  # schedule:
+  #   - cron: '0 1 * * 0'  # Weekly on Sunday at 1 AM UTC
+  # push:
+  #   branches: [ "main" ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-osv-scanner-scheduled
@@ -61,3 +61,4 @@ jobs:
         with:
           sarif_file: results.sarif
           category: osv-scanner-scheduled
+

@@ -6,9 +6,9 @@
 name: lint
 
 on:
-  push:
-    branches:
-        - 'main'
+  # push:
+  #   branches:
+  #       - 'main'
   pull_request:
   workflow_dispatch:
 
@@ -212,3 +212,4 @@ jobs:
       - name: Static checks for peerpods chart
         working-directory: src/cloud-api-adaptor
         run: make static-helm-check
+
