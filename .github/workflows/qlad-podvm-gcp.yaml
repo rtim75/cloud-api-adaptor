@@ -127,5 +127,8 @@ jobs:
 
       - name: Upload image with uplosi
         working-directory: src/cloud-api-adaptor/podvm
-        run: uplosi upload build/system.raw
+        run: |
+          test -n "$UPLOSI_CONFIG"
+          printf '%s\n' "$UPLOSI_CONFIG" > uplosi.conf
+          uplosi upload build/system.raw
 
